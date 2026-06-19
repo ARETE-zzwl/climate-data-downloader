@@ -5,10 +5,11 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "climate-data-downloader"
 version = "0.1.0"
-description = "NEX-GDDP-CMIP6 and CMIP6 desktop downloader"
+description = "Multi-source climate data desktop downloader and package organizer"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+  "certifi>=2024.2",
   "numpy>=1.24",
   "scipy>=1.10",
   "xarray>=2023.1",

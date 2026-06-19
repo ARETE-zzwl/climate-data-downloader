@@ -35,7 +35,12 @@ class DownloadItem:
     checksum: str | None = None
     checksum_type: str | None = None
     source: str = ""
+    relative_dir: str | None = None
 
     def target_path(self, output: Path) -> Path:
-        return output / self.source / self.filename
-
+        relative = Path(self.relative_dir or self.source)
+        if relative.is_absolute() or ".." in relative.parts:
+            raise ValueError("下载目录必须是安全的相对路径")
+        if self.filename in {"", ".", ".."} or Path(self.filename).name != self.filename:
+            raise ValueError("下载文件名不安全")
+        return output / relative / self.filename

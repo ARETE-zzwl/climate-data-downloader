@@ -62,13 +62,13 @@ class BatchSelection:
 @dataclass(frozen=True)
 class PlannedItem:
     dataset: str
-    query: DataQuery
+    query: object
     item: DownloadItem
 
 
 def merge_query_results(
     dataset: str,
-    results: Iterable[tuple[DataQuery, list[DownloadItem]]],
+    results: Iterable[tuple[object, list[DownloadItem]]],
 ) -> list[PlannedItem]:
     merged: dict[tuple[str, int, str], PlannedItem] = {}
     for query, items in results:
@@ -83,15 +83,26 @@ def fetch_batch(
     fetcher: Callable[[DataQuery], list[DownloadItem]],
     workers: int = 4,
 ) -> tuple[list[PlannedItem], dict[DataQuery, Exception]]:
-    results: list[tuple[DataQuery, list[DownloadItem]]] = []
-    failed: dict[DataQuery, Exception] = {}
-    queries = selection.expand_queries()
-    with ThreadPoolExecutor(max_workers=min(max(1, workers), len(queries))) as executor:
-        futures = {executor.submit(fetcher, query): query for query in queries}
+    return fetch_queries(selection.dataset, selection.expand_queries(), fetcher, workers)
+
+
+def fetch_queries(
+    dataset: str,
+    queries: Iterable[object],
+    fetcher: Callable[[object], list[DownloadItem]],
+    workers: int = 4,
+) -> tuple[list[PlannedItem], dict[object, Exception]]:
+    results: list[tuple[object, list[DownloadItem]]] = []
+    failed: dict[object, Exception] = {}
+    query_list = list(queries)
+    if not query_list:
+        return [], {}
+    with ThreadPoolExecutor(max_workers=min(max(1, workers), len(query_list))) as executor:
+        futures = {executor.submit(fetcher, query): query for query in query_list}
         for future in as_completed(futures):
             query = futures[future]
             try:
                 results.append((query, future.result()))
             except Exception as error:
                 failed[query] = error
-    return merge_query_results(selection.dataset, results), failed
+    return merge_query_results(dataset, results), failed

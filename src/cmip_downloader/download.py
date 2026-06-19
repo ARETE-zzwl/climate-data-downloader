@@ -1,10 +1,13 @@
 import hashlib
 import os
+import ssl
 import time
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Callable, Iterable
+
+import certifi
 
 from .models import DownloadItem
 
@@ -45,7 +48,8 @@ def _download_attempt(
     if existing:
         headers["Range"] = f"bytes={existing}-"
     request = urllib.request.Request(item.url, headers=headers)
-    with urllib.request.urlopen(request, timeout=timeout) as response:
+    context = ssl.create_default_context(cafile=certifi.where()) if item.url.startswith("https://") else None
+    with urllib.request.urlopen(request, timeout=timeout, context=context) as response:
         resumed = existing > 0 and getattr(response, "status", None) == 206
         mode = "ab" if resumed else "wb"
         downloaded = existing if resumed else 0

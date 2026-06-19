@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from pathlib import Path
 
+from .batch import BatchSelection
 from .models import DataQuery
 from .process import ProcessOptions
 
@@ -13,6 +14,27 @@ class DownloadRequest:
     output: Path
     workers: int
     keep_raw: bool
+
+    @property
+    def needs_processing(self) -> bool:
+        return (
+            self.process.bbox is not None
+            or self.process.spatial_resolution is not None
+            or self.process.temporal_scale != "original"
+        )
+
+
+@dataclass(frozen=True)
+class BatchDownloadRequest:
+    selection: BatchSelection
+    process: ProcessOptions
+    output: Path
+    workers: int
+    keep_raw: bool
+
+    @property
+    def dataset(self) -> str:
+        return self.selection.dataset
 
     @property
     def needs_processing(self) -> bool:
@@ -119,4 +141,87 @@ class FormData:
         )
         return DownloadRequest(
             self.dataset, query, process, output, workers, self.keep_raw
+        )
+
+
+@dataclass(frozen=True)
+class BatchFormData:
+    dataset: str
+    models: tuple[str, ...]
+    experiments: tuple[str, ...]
+    members: tuple[str, ...]
+    variables: tuple[str, ...]
+    tables: tuple[str, ...]
+    version: str
+    start_year: str
+    end_year: str
+    global_area: bool
+    west: str
+    east: str
+    south: str
+    north: str
+    resolution: str
+    temporal_scale: str
+    aggregation: str
+    output: str
+    workers: str
+    keep_raw: bool
+
+    def to_request(self) -> BatchDownloadRequest:
+        try:
+            start_year, end_year = int(self.start_year), int(self.end_year)
+        except ValueError as error:
+            raise ValueError("年份必须是整数") from error
+        try:
+            workers = int(self.workers)
+        except ValueError as error:
+            raise ValueError("并发数必须是整数") from error
+        if not 1 <= workers <= 16:
+            raise ValueError("并发数必须位于 1 到 16 之间")
+        if self.dataset not in {"nex", "cmip6"}:
+            raise ValueError("不支持的数据源")
+
+        bbox = None
+        if not self.global_area:
+            try:
+                bbox = tuple(
+                    float(value)
+                    for value in (self.west, self.east, self.south, self.north)
+                )
+            except ValueError as error:
+                raise ValueError("经纬度必须是数字") from error
+        try:
+            resolution = None if self.resolution == "original" else float(self.resolution)
+        except ValueError as error:
+            raise ValueError("空间分辨率必须是数字") from error
+
+        output = Path(self.output).expanduser()
+        existing_parent = output if output.exists() else output.parent
+        if not existing_parent.exists():
+            raise ValueError("输出目录的上级目录不存在")
+
+        selection = BatchSelection(
+            dataset=self.dataset,
+            models=self.models,
+            experiments=self.experiments,
+            members=self.members,
+            variables=self.variables,
+            tables=self.tables,
+            start_year=start_year,
+            end_year=end_year,
+            version=self.version,
+        )
+        selection.expand_queries()
+        process = ProcessOptions(
+            bbox=bbox,
+            spatial_resolution=resolution,
+            temporal_scale=self.temporal_scale,
+            aggregation=self.aggregation,
+        )
+        return BatchDownloadRequest(
+            selection=selection,
+            process=process,
+            output=output,
+            workers=workers,
+            keep_raw=self.keep_raw,
         )

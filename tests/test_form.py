@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from cmip_downloader.form import FormData
+from cmip_downloader.form import BatchFormData, FormData
 
 
 class FormDataTests(unittest.TestCase):
@@ -55,6 +55,38 @@ class FormDataTests(unittest.TestCase):
             form.to_request()
 
 
+class BatchFormDataTests(unittest.TestCase):
+    def test_builds_multi_select_download_request(self):
+        with tempfile.TemporaryDirectory() as directory:
+            form = BatchFormData(
+                dataset="cmip6",
+                models=("ACCESS-CM2", "MIROC6"),
+                experiments=("historical", "ssp245"),
+                members=("r1i1p1f1",),
+                variables=("tas", "pr"),
+                tables=("day",),
+                version="v2.0",
+                start_year="2000",
+                end_year="2005",
+                global_area=True,
+                west="-180",
+                east="180",
+                south="-90",
+                north="90",
+                resolution="original",
+                temporal_scale="original",
+                aggregation="mean",
+                output=directory,
+                workers="3",
+                keep_raw=True,
+            )
+
+            request = form.to_request()
+
+            self.assertEqual(len(request.selection.expand_queries()), 8)
+            self.assertEqual(request.selection.models, ("ACCESS-CM2", "MIROC6"))
+            self.assertFalse(request.needs_processing)
+
+
 if __name__ == "__main__":
     unittest.main()
-
