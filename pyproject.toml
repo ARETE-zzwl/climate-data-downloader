@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "climate-data-downloader"
+version = "0.1.0"
+description = "NEX-GDDP-CMIP6 and CMIP6 desktop downloader"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.24",
+  "xarray>=2023.1",
+  "netCDF4>=1.6",
+]
+
+[project.scripts]
+climatedl = "cmip_downloader.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
