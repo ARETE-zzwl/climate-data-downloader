@@ -5,25 +5,42 @@ from pathlib import Path
 from tkinter import BooleanVar, StringVar, Text, Tk, filedialog, messagebox
 from tkinter import ttk
 
-from . import esgf, nex
-from .catalog import (
-    NEX_EXPERIMENTS,
-    NEX_MODELS,
-    NEX_VARIABLES,
-    fetch_esgf_facets,
-)
+from . import cordex, esgf, nex
+from .batch import PlannedItem, fetch_batch
+from .catalog import NEX_EXPERIMENTS, NEX_MODELS, NEX_VARIABLES, fetch_esgf_facets
 from .download import download_many
-from .form import DownloadRequest, FormData
-from .models import DownloadItem
-from .process import process_netcdf
+from .era5 import AVAILABILITY_MESSAGE
+from .form import BatchDownloadRequest, BatchFormData
+from .multi_select import MultiSelectField
+from .package import finalize_package, prepare_package
+from .power import POWER_VARIABLES, PowerSelection, plan_files
+from .process import ProcessOptions, process_netcdf
 
 
-DATASETS = {"NEX-GDDP-CMIP6（降尺度）": "nex", "CMIP6（原始模式数据）": "cmip6"}
+DATASETS = {
+    "NEX-GDDP-CMIP6（降尺度）": "nex",
+    "CMIP6（原始模式数据）": "cmip6",
+    "CORDEX（区域气候模式）": "cordex",
+    "NASA POWER（气象与太阳能）": "power",
+    "ERA5 / ERA5-Land（预留）": "era5",
+}
 TEMPORAL_SCALES = {"保持原尺度": "original", "日": "daily", "月": "monthly", "年": "annual"}
 AGGREGATIONS = {"平均值": "mean", "求和": "sum", "最小值": "min", "最大值": "max"}
 
+CMIP_TABLES = ["day", "Amon", "Omon", "3hr", "6hrLev", "fx"]
+CMIP_MEMBERS = ["r1i1p1f1", "r2i1p1f1", "r3i1p1f1"]
+CORDEX_DOMAINS = ["SEA-22", "EUR-11", "EUR-44", "EAS-22", "EAS-44", "AFR-22", "NAM-22", "AUS-22"]
+CORDEX_MODELS = ["MOHC-HadGEM2-ES", "CNRM-CERFACS-CNRM-CM5", "ECMWF-ERAINT", "MPI-M-MPI-ESM-LR"]
+CORDEX_RCMS = ["不限", "HadRM3P", "ALADIN63", "CCLM4-8-17", "RCA4", "REMO2009"]
+CORDEX_EXPERIMENTS = ["evaluation", "historical", "rcp26", "rcp45", "rcp85"]
+CORDEX_MEMBERS = ["r1i1p1", "r0i0p0"]
+CORDEX_VARIABLES = ["tas", "tasmax", "tasmin", "pr", "areacella"]
+CORDEX_FREQUENCIES = ["day", "mon", "fx", "3hr", "6hr"]
+
 
 def format_size(size: int) -> str:
+    if not size:
+        return "服务器生成"
     value = float(size)
     for unit in ("B", "KB", "MB", "GB", "TB"):
         if value < 1024 or unit == "TB":
@@ -36,8 +53,9 @@ class ClimateDownloaderApp:
     def __init__(self, root: Tk):
         self.root = root
         self.events: queue.Queue = queue.Queue()
-        self.items: list[DownloadItem] = []
-        self.current_request: DownloadRequest | None = None
+        self.items: list[PlannedItem] = []
+        self.current_request: BatchDownloadRequest | None = None
+        self.query_failures: dict[object, Exception] = {}
         self.downloaded: dict[str, int] = {}
         self.total_bytes = 0
         self._variables()
@@ -49,11 +67,6 @@ class ClimateDownloaderApp:
     def _variables(self) -> None:
         home = Path.home() / "climate-data"
         self.dataset = StringVar(value=next(iter(DATASETS)))
-        self.model = StringVar(value="ACCESS-CM2")
-        self.experiment = StringVar(value="historical")
-        self.member = StringVar(value="r1i1p1f1")
-        self.variable = StringVar(value="pr")
-        self.table = StringVar(value="day")
         self.version = StringVar(value="v2.0")
         self.start_year = StringVar(value="2000")
         self.end_year = StringVar(value="2014")
@@ -72,9 +85,9 @@ class ClimateDownloaderApp:
         self.status = StringVar(value="就绪")
 
     def _configure_window(self) -> None:
-        self.root.title("气候数据下载器 · NEX-GDDP-CMIP6 / CMIP6")
-        self.root.geometry("1180x760")
-        self.root.minsize(980, 640)
+        self.root.title("气候数据下载器 · 多源批量版")
+        self.root.geometry("1260x820")
+        self.root.minsize(1040, 700)
         self.root.configure(bg="#edf2f1")
         style = ttk.Style(self.root)
         if "clam" in style.theme_names():
@@ -98,16 +111,15 @@ class ClimateDownloaderApp:
         ttk.Label(header, text="气候数据下载器", style="Header.TLabel").pack(anchor="w")
         ttk.Label(
             header,
-            text="统一检索 NEX-GDDP-CMIP6 与 CMIP6，下载后可按区域、网格和时间尺度处理",
+            text="NEX · CMIP6 · CORDEX · NASA POWER｜多选批量检索、断点续传与自描述数据包",
             style="Subheader.TLabel",
         ).pack(anchor="w", pady=(3, 0))
 
         body = ttk.Frame(self.root, padding=14)
         body.pack(fill="both", expand=True)
-        body.columnconfigure(0, weight=0, minsize=385)
+        body.columnconfigure(0, weight=0, minsize=430)
         body.columnconfigure(1, weight=1)
         body.rowconfigure(0, weight=1)
-
         left = ttk.Frame(body, style="Surface.TFrame", padding=12)
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
         right = ttk.Frame(body, style="Surface.TFrame", padding=12)
@@ -128,24 +140,29 @@ class ClimateDownloaderApp:
 
         self.dataset_box = self._combo(data_tab, 0, "数据源", self.dataset, list(DATASETS), readonly=True)
         self.dataset_box.bind("<<ComboboxSelected>>", lambda _event: self._dataset_changed())
-        self.model_box = self._combo(data_tab, 1, "模式", self.model, NEX_MODELS)
-        self.experiment_box = self._combo(data_tab, 2, "情景 / 试验", self.experiment, NEX_EXPERIMENTS)
-        self.member_box = self._combo(data_tab, 3, "成员", self.member, ["r1i1p1f1"])
-        self.variable_box = self._combo(data_tab, 4, "变量", self.variable, NEX_VARIABLES)
-        self.table_box = self._combo(data_tab, 5, "频率 / table", self.table, ["day"])
-        self.version_box = self._combo(data_tab, 6, "NEX 版本", self.version, ["v2.0", "v1.1", "original"], readonly=True)
-        self._entry(data_tab, 7, "起始年份", self.start_year)
-        self._entry(data_tab, 8, "结束年份", self.end_year)
-        self.source_hint = ttk.Label(data_tab, style="Hint.TLabel", wraplength=320, justify="left")
-        self.source_hint.grid(row=9, column=0, columnspan=2, sticky="ew", pady=(10, 8))
-        self.refresh_button = ttk.Button(data_tab, text="刷新可选项", command=self._refresh_catalog)
-        self.refresh_button.grid(row=10, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+        self.domain_label, self.domain_field = self._multi(data_tab, 1, "区域域", CORDEX_DOMAINS)
+        self.model_label, self.model_field = self._multi(data_tab, 2, "模式", NEX_MODELS)
+        self.rcm_label, self.rcm_field = self._multi(data_tab, 3, "区域模式 RCM", CORDEX_RCMS)
+        self.experiment_label, self.experiment_field = self._multi(data_tab, 4, "情景 / 试验", NEX_EXPERIMENTS)
+        self.member_label, self.member_field = self._multi(data_tab, 5, "成员", ["r1i1p1f1"])
+        self.variable_label, self.variable_field = self._multi(data_tab, 6, "变量", NEX_VARIABLES)
+        self.table_label, self.table_field = self._multi(data_tab, 7, "频率 / table", ["day"])
+        self.version_box = self._combo(data_tab, 8, "NEX 版本", self.version, ["v2.0", "v1.1", "original"], readonly=True)
+        self._entry(data_tab, 9, "起始年份", self.start_year)
+        self._entry(data_tab, 10, "结束年份", self.end_year)
+        self.source_hint = ttk.Label(data_tab, style="Hint.TLabel", wraplength=360, justify="left")
+        self.source_hint.grid(row=11, column=0, columnspan=2, sticky="ew", pady=(10, 8))
+        self.refresh_button = ttk.Button(data_tab, text="刷新官方可选项", command=self._refresh_catalog)
+        self.refresh_button.grid(row=12, column=0, columnspan=2, sticky="ew", pady=(4, 0))
 
         global_check = ttk.Checkbutton(
-            output_tab, text="全球范围（取消勾选后填写矩形经纬度）", variable=self.global_area,
+            output_tab,
+            text="全球范围（取消勾选后填写矩形经纬度）",
+            variable=self.global_area,
             command=self._toggle_bbox,
         )
         global_check.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
+        self.global_check = global_check
         bbox = ttk.Frame(output_tab, style="Surface.TFrame")
         bbox.grid(row=1, column=0, columnspan=2, sticky="ew")
         for column in range(4):
@@ -170,10 +187,9 @@ class ClimateDownloaderApp:
         )
         ttk.Label(
             output_tab,
-            text="重采样改变网格间距，不会提高模式的真实物理精度。时间聚合默认取平均；降水率等变量请按研究目的选择。",
-            style="Hint.TLabel", wraplength=320, justify="left",
+            text="重采样只改变网格间距，不会提高真实物理精度。NASA POWER 的区域接口要求经纬度各至少跨越 2°。",
+            style="Hint.TLabel", wraplength=360, justify="left",
         ).grid(row=5, column=0, columnspan=2, sticky="ew", pady=(10, 8))
-
         ttk.Label(output_tab, text="输出目录").grid(row=6, column=0, sticky="w", pady=5)
         output_row = ttk.Frame(output_tab, style="Surface.TFrame")
         output_row.grid(row=6, column=1, sticky="ew", pady=5)
@@ -195,20 +211,21 @@ class ClimateDownloaderApp:
         table_frame.grid(row=2, column=0, sticky="nsew")
         table_frame.columnconfigure(0, weight=1)
         table_frame.rowconfigure(0, weight=1)
-        self.tree = ttk.Treeview(table_frame, columns=("name", "size", "source"), show="headings", selectmode="browse")
-        self.tree.heading("name", text="文件名")
-        self.tree.heading("size", text="大小")
-        self.tree.heading("source", text="来源")
-        self.tree.column("name", width=440, anchor="w")
-        self.tree.column("size", width=90, anchor="e")
-        self.tree.column("source", width=120, anchor="center")
+        self.tree = ttk.Treeview(
+            table_frame, columns=("name", "size", "source", "selection"), show="headings", selectmode="browse"
+        )
+        for name, label in (("name", "文件名"), ("size", "大小"), ("source", "来源"), ("selection", "所属组合")):
+            self.tree.heading(name, text=label)
+        self.tree.column("name", width=390, anchor="w")
+        self.tree.column("size", width=95, anchor="e")
+        self.tree.column("source", width=100, anchor="center")
+        self.tree.column("selection", width=240, anchor="w")
         scroll_y = ttk.Scrollbar(table_frame, orient="vertical", command=self.tree.yview)
         scroll_x = ttk.Scrollbar(table_frame, orient="horizontal", command=self.tree.xview)
         self.tree.configure(yscrollcommand=scroll_y.set, xscrollcommand=scroll_x.set)
         self.tree.grid(row=0, column=0, sticky="nsew")
         scroll_y.grid(row=0, column=1, sticky="ns")
         scroll_x.grid(row=1, column=0, sticky="ew")
-
         ttk.Label(parent, text="任务日志", style="Section.TLabel").grid(row=3, column=0, sticky="w", pady=(12, 5))
         self.log = Text(
             parent, height=8, bg="#f6f8f8", fg="#29484d", relief="flat", padx=8, pady=6,
@@ -225,7 +242,7 @@ class ClimateDownloaderApp:
         ttk.Label(footer, textvariable=self.status, width=18).grid(row=0, column=1, padx=(0, 12))
         self.preview_button = ttk.Button(footer, text="1. 查询清单", command=self._preview)
         self.preview_button.grid(row=0, column=2, padx=(0, 8))
-        self.download_button = ttk.Button(footer, text="2. 开始下载", style="Accent.TButton", command=self._start_download)
+        self.download_button = ttk.Button(footer, text="2. 下载并整理", style="Accent.TButton", command=self._start_download)
         self.download_button.grid(row=0, column=3)
 
     def _combo(self, parent, row, label, variable, values, readonly=False):
@@ -240,21 +257,95 @@ class ClimateDownloaderApp:
         entry.grid(row=row, column=1, sticky="ew", pady=5)
         return entry
 
-    def _dataset_changed(self) -> None:
-        is_nex = DATASETS[self.dataset.get()] == "nex"
-        if is_nex:
-            self.model_box.configure(values=NEX_MODELS)
-            self.experiment_box.configure(values=NEX_EXPERIMENTS)
-            self.variable_box.configure(values=NEX_VARIABLES)
-            self.table.set("day")
-            self.table_box.configure(values=["day"], state="disabled")
-            self.version_box.configure(state="readonly")
-            self.source_hint.configure(text="NEX：0.25° 日尺度降尺度数据；默认使用 v2.0，避免同一年多版本重复下载。")
+    def _multi(self, parent, row, label, values):
+        label_widget = ttk.Label(parent, text=label)
+        label_widget.grid(row=row, column=0, sticky="w", pady=5, padx=(0, 8))
+        field = MultiSelectField(parent, values, on_change=self._invalidate_preview)
+        field.grid(row=row, column=1, sticky="ew", pady=5)
+        return label_widget, field
+
+    def _show_filter(self, label, field, visible: bool) -> None:
+        if visible:
+            label.grid()
+            field.grid()
         else:
-            self.table_box.configure(state="normal")
-            self.version_box.configure(state="disabled")
-            self.source_hint.configure(text="CMIP6：模式、试验、成员、变量和 table 可直接输入；点击“刷新可选项”从 ESGF 获取候选值。")
+            label.grid_remove()
+            field.grid_remove()
+
+    def _dataset_changed(self) -> None:
+        dataset = DATASETS[self.dataset.get()]
+        for label, field in (
+            (self.model_label, self.model_field),
+            (self.experiment_label, self.experiment_field),
+            (self.member_label, self.member_field),
+            (self.variable_label, self.variable_field),
+            (self.table_label, self.table_field),
+        ):
+            self._show_filter(label, field, True)
+            field.configure(state="normal")
+        self._show_filter(self.domain_label, self.domain_field, dataset == "cordex")
+        self._show_filter(self.rcm_label, self.rcm_field, dataset == "cordex")
+        self.version_box.configure(state="disabled")
+        self.global_check.configure(state="normal")
+        if dataset not in {"power", "era5"}:
+            self.global_area.set(True)
+
+        if dataset == "nex":
+            self.model_field.set_values(NEX_MODELS, ["ACCESS-CM2"])
+            self.experiment_field.set_values(NEX_EXPERIMENTS, ["historical"])
+            self.member_field.set_values(["r1i1p1f1"], ["r1i1p1f1"])
+            self.variable_field.set_values(NEX_VARIABLES, ["pr"])
+            self.table_field.set_values(["day"], ["day"])
+            self.table_field.configure(state="disabled")
+            self.version_box.configure(state="readonly")
+            self.source_hint.configure(text="NEX：NASA NCCS / AWS Open Data 官方镜像的 0.25° 日尺度降尺度数据。模式、情景和变量可多选。")
+        elif dataset == "cmip6":
+            self.model_field.set_values(NEX_MODELS, ["ACCESS-CM2"])
+            self.experiment_field.set_values(NEX_EXPERIMENTS, ["historical"])
+            self.member_field.set_values(CMIP_MEMBERS, ["r1i1p1f1"])
+            self.variable_field.set_values(NEX_VARIABLES, ["tas"])
+            self.table_field.set_values(CMIP_TABLES, ["day"])
+            self.source_hint.configure(text="CMIP6：LLNL ESGF 官方联邦索引；五类筛选均可多选，刷新可获得完整候选列表。")
+        elif dataset == "cordex":
+            self.domain_field.set_values(CORDEX_DOMAINS, ["SEA-22"])
+            self.model_field.set_values(CORDEX_MODELS, ["MOHC-HadGEM2-ES"])
+            self.rcm_field.set_values(CORDEX_RCMS, ["不限"])
+            self.experiment_field.set_values(CORDEX_EXPERIMENTS, ["rcp26"])
+            self.member_field.set_values(CORDEX_MEMBERS, ["r0i0p0"])
+            self.variable_field.set_values(CORDEX_VARIABLES, ["areacella"])
+            self.table_field.set_values(CORDEX_FREQUENCIES, ["fx"])
+            self.source_hint.configure(text="CORDEX：WCRP 区域气候数据，通过 DKRZ ESGF 官方索引检索；区域域、驱动模式和 RCM 可独立多选。")
+        elif dataset == "power":
+            for label, field in (
+                (self.model_label, self.model_field),
+                (self.experiment_label, self.experiment_field),
+                (self.member_label, self.member_field),
+            ):
+                self._show_filter(label, field, False)
+            self.variable_field.set_values(POWER_VARIABLES, ["T2M"])
+            self.table_field.set_values(["daily", "monthly"], ["daily"])
+            self.global_area.set(False)
+            self.west.set("116")
+            self.east.set("118")
+            self.south.set("38")
+            self.north.set("40")
+            self.source_hint.configure(text="NASA POWER：NASA LaRC 官方 API，无需密钥。区域请求会为每个变量分别生成 NetCDF，再统一整理。")
+        else:
+            for label, field in (
+                (self.model_label, self.model_field), (self.experiment_label, self.experiment_field),
+                (self.member_label, self.member_field), (self.variable_label, self.variable_field),
+                (self.table_label, self.table_field),
+            ):
+                self._show_filter(label, field, False)
+            self.source_hint.configure(text=AVAILABILITY_MESSAGE)
+            self.refresh_button.configure(state="disabled")
+        self._toggle_bbox()
         self._invalidate_preview()
+        reserved = dataset == "era5"
+        self.preview_button.configure(state="disabled" if reserved else "normal")
+        self.download_button.configure(state="disabled" if reserved else "normal")
+        if not reserved:
+            self.refresh_button.configure(state="normal")
 
     def _toggle_bbox(self) -> None:
         state = "disabled" if self.global_area.get() else "normal"
@@ -266,22 +357,83 @@ class ClimateDownloaderApp:
         if selected:
             self.output.set(selected)
 
-    def _form(self) -> FormData:
-        resolution = self.resolution.get().strip()
-        return FormData(
-            dataset=DATASETS[self.dataset.get()], model=self.model.get(), experiment=self.experiment.get(),
-            member=self.member.get(), variable=self.variable.get(), table=self.table.get(), version=self.version.get(),
-            start_year=self.start_year.get(), end_year=self.end_year.get(), global_area=self.global_area.get(),
-            west=self.west.get(), east=self.east.get(), south=self.south.get(), north=self.north.get(),
-            resolution="original" if resolution == "原始" else resolution,
-            temporal_scale=TEMPORAL_SCALES[self.temporal_scale.get()],
-            aggregation=AGGREGATIONS[self.aggregation.get()], output=self.output.get(), workers=self.workers.get(),
-            keep_raw=self.keep_raw.get(),
-        )
-
-    def _validated_request(self) -> DownloadRequest | None:
+    def _common_values(self):
         try:
-            return self._form().to_request()
+            start, end, workers = int(self.start_year.get()), int(self.end_year.get()), int(self.workers.get())
+        except ValueError as error:
+            raise ValueError("年份和并发数必须是整数") from error
+        if start > end:
+            raise ValueError("起始年份不能晚于结束年份")
+        if not 1 <= workers <= 16:
+            raise ValueError("并发数必须位于 1 到 16 之间")
+        output = Path(self.output.get()).expanduser()
+        parent = output if output.exists() else output.parent
+        if not parent.exists():
+            raise ValueError("输出目录的上级目录不存在")
+        bbox = None
+        if not self.global_area.get():
+            try:
+                bbox = tuple(float(value.get()) for value in (self.west, self.east, self.south, self.north))
+            except ValueError as error:
+                raise ValueError("经纬度必须是数字") from error
+        resolution_text = self.resolution.get().strip()
+        try:
+            resolution = None if resolution_text == "原始" else float(resolution_text)
+        except ValueError as error:
+            raise ValueError("空间分辨率必须是数字") from error
+        process = ProcessOptions(
+            bbox=bbox,
+            spatial_resolution=resolution,
+            temporal_scale=TEMPORAL_SCALES[self.temporal_scale.get()],
+            aggregation=AGGREGATIONS[self.aggregation.get()],
+        )
+        return start, end, workers, output, bbox, process
+
+    def _validated_request(self) -> BatchDownloadRequest | None:
+        dataset = DATASETS[self.dataset.get()]
+        if dataset == "era5":
+            messagebox.showinfo("ERA5 预留入口", AVAILABILITY_MESSAGE, parent=self.root)
+            return None
+        try:
+            start, end, workers, output, bbox, process = self._common_values()
+            if dataset in {"nex", "cmip6"}:
+                request = BatchFormData(
+                    dataset=dataset,
+                    models=self.model_field.get(), experiments=self.experiment_field.get(),
+                    members=self.member_field.get(), variables=self.variable_field.get(), tables=self.table_field.get(),
+                    version=self.version.get(), start_year=str(start), end_year=str(end),
+                    global_area=self.global_area.get(), west=self.west.get(), east=self.east.get(),
+                    south=self.south.get(), north=self.north.get(),
+                    resolution="original" if self.resolution.get() == "原始" else self.resolution.get(),
+                    temporal_scale=TEMPORAL_SCALES[self.temporal_scale.get()],
+                    aggregation=AGGREGATIONS[self.aggregation.get()], output=str(output),
+                    workers=str(workers), keep_raw=self.keep_raw.get(),
+                ).to_request()
+            elif dataset == "cordex":
+                selection = cordex.CordexSelection(
+                    self.domain_field.get(), self.model_field.get(), self.experiment_field.get(),
+                    self.member_field.get(), self.rcm_field.get(), self.variable_field.get(),
+                    self.table_field.get(), start, end,
+                )
+                selection.expand_queries()
+                request = BatchDownloadRequest(selection, process, output, workers, self.keep_raw.get())
+            else:
+                if bbox is None:
+                    raise ValueError("NASA POWER 必须取消全球范围并填写矩形区域")
+                west, east, south, north = bbox
+                selection = PowerSelection(
+                    self.variable_field.get(), self.table_field.get(), start, end,
+                    west, east, south, north,
+                )
+                selection.expand_queries()
+                power_process = ProcessOptions(
+                    bbox=None,
+                    spatial_resolution=process.spatial_resolution,
+                    temporal_scale=process.temporal_scale,
+                    aggregation=process.aggregation,
+                )
+                request = BatchDownloadRequest(selection, power_process, output, workers, self.keep_raw.get())
+            return request
         except ValueError as error:
             messagebox.showerror("参数有误", str(error), parent=self.root)
             return None
@@ -289,21 +441,36 @@ class ClimateDownloaderApp:
     def _invalidate_preview(self) -> None:
         self.items = []
         self.current_request = None
-        self.summary.set("筛选条件已变化，请重新查询")
+        if hasattr(self, "summary"):
+            self.summary.set("筛选条件已变化，请重新查询")
 
     def _refresh_catalog(self) -> None:
-        if DATASETS[self.dataset.get()] == "nex":
+        dataset = DATASETS[self.dataset.get()]
+        if dataset in {"nex", "power"}:
             self._dataset_changed()
-            self._write_log("已加载 NEX 官方模式、情景和变量列表。")
-            return
-        self._start_worker("catalog", fetch_esgf_facets, "正在刷新 ESGF 可选项…")
+            self._write_log("已加载数据源官方变量与筛选列表。")
+        elif dataset == "cmip6":
+            self._start_worker("catalog", lambda: (dataset, fetch_esgf_facets()), "正在刷新 CMIP6 可选项…")
+        elif dataset == "cordex":
+            self._start_worker("catalog", lambda: (dataset, cordex.fetch_facets()), "正在刷新 CORDEX 可选项…")
 
     def _preview(self) -> None:
         request = self._validated_request()
         if not request:
             return
-        fetcher = nex.fetch_files if request.dataset == "nex" else esgf.fetch_files
-        self._start_worker("preview", lambda: (request, fetcher(request.query)), "正在查询文件清单…")
+
+        def query():
+            if request.dataset in {"nex", "cmip6"}:
+                fetcher = nex.fetch_files if request.dataset == "nex" else esgf.fetch_files
+                items, failed = fetch_batch(request.selection, fetcher, request.workers)
+            elif request.dataset == "cordex":
+                items, failed = cordex.fetch_batch(request.selection, request.workers)
+            else:
+                items, failed = plan_files(request.selection), {}
+            return request, items, failed
+
+        count = len(request.selection.expand_queries())
+        self._start_worker("preview", query, f"正在查询 {count} 个筛选组合…")
 
     def _start_download(self) -> None:
         request = self._validated_request()
@@ -312,36 +479,63 @@ class ClimateDownloaderApp:
         if not self.items or request != self.current_request:
             messagebox.showinfo("请先查询", "筛选条件发生过变化，请先点击“查询清单”。", parent=self.root)
             return
-        size = format_size(sum(item.size for item in self.items))
+        known_total = sum(planned.item.size for planned in self.items)
+        unknown = sum(not planned.item.size for planned in self.items)
+        size = format_size(known_total) if known_total else "由服务器生成"
+        extra = f"，其中 {unknown} 个文件大小由服务器生成" if unknown else ""
         processing = "，下载后将执行裁剪/重采样/聚合" if request.needs_processing else ""
         if not messagebox.askyesno(
-            "确认下载", f"将下载 {len(self.items)} 个文件，共 {size}{processing}。是否继续？", parent=self.root
+            "确认下载",
+            f"将下载 {len(self.items)} 个文件，已知大小 {size}{extra}{processing}。完成后自动生成清单和 SHA256。是否继续？",
+            parent=self.root,
         ):
             return
         self.downloaded = {}
-        self.total_bytes = sum(item.size for item in self.items)
+        self.total_bytes = 0 if unknown else known_total
         self.progress["value"] = 0
         self._start_worker(
-            "download", lambda: self._download_job(request, list(self.items)), "正在下载…"
+            "download",
+            lambda: self._download_job(request, list(self.items), dict(self.query_failures)),
+            "正在下载并整理…",
         )
 
-    def _download_job(self, request: DownloadRequest, items: list[DownloadItem]):
+    def _download_job(
+        self,
+        request: BatchDownloadRequest,
+        items: list[PlannedItem],
+        query_failures: dict[object, Exception],
+    ):
+        package, prepared = prepare_package(request.output, items)
         completed, failed = download_many(
-            items, request.output, workers=request.workers, progress=self._download_progress
+            [planned.item for planned in prepared],
+            package,
+            workers=request.workers,
+            progress=self._download_progress,
         )
         processed: list[Path] = []
         process_failed: dict[str, Exception] = {}
         if request.needs_processing:
             for index, source in enumerate(completed, 1):
                 self.events.put(("log", f"处理 {index}/{len(completed)}：{source.name}"))
-                target = request.output / "processed" / source.parent.name / f"{source.stem}_processed.nc"
+                relative = source.relative_to(package)
+                target = package / "processed" / Path(*relative.parts[1:]).parent / f"{source.stem}_processed.nc"
                 try:
                     processed.append(process_netcdf(source, target, request.process))
                     if not request.keep_raw:
                         source.unlink()
                 except Exception as error:
                     process_failed[source.name] = error
-        return completed, failed, processed, process_failed
+        finalize_package(
+            package,
+            prepared,
+            completed,
+            {**failed, **process_failed},
+            filters=request.selection,
+            processing=request.process,
+            processed=processed,
+            query_failures=query_failures,
+        )
+        return package, completed, failed, processed, process_failed
 
     def _download_progress(self, filename: str, downloaded: int, total: int) -> None:
         self.events.put(("progress", filename, downloaded, total))
@@ -365,7 +559,7 @@ class ClimateDownloaderApp:
                 event = self.events.get_nowait()
                 kind = event[0]
                 if kind == "catalog":
-                    self._catalog_ready(event[1])
+                    self._catalog_ready(*event[1])
                 elif kind == "preview":
                     self._preview_ready(*event[1])
                 elif kind == "download":
@@ -382,45 +576,85 @@ class ClimateDownloaderApp:
             pass
         self.root.after(100, self._poll_events)
 
-    def _catalog_ready(self, facets: dict[str, list[str]]) -> None:
-        mapping = [
-            (self.model_box, "source_id"), (self.experiment_box, "experiment_id"),
-            (self.member_box, "variant_label"), (self.variable_box, "variable_id"),
-            (self.table_box, "table_id"),
-        ]
+    def _catalog_ready(self, dataset: str, facets: dict[str, list[str]]) -> None:
+        if dataset != DATASETS[self.dataset.get()]:
+            return
+        if dataset == "cmip6":
+            mapping = (
+                (self.model_field, "source_id"), (self.experiment_field, "experiment_id"),
+                (self.member_field, "variant_label"), (self.variable_field, "variable_id"),
+                (self.table_field, "table_id"),
+            )
+        else:
+            mapping = (
+                (self.domain_field, "domain"), (self.model_field, "driving_model"),
+                (self.experiment_field, "experiment"), (self.member_field, "ensemble"),
+                (self.rcm_field, "rcm_name"), (self.variable_field, "variable"),
+                (self.table_field, "time_frequency"),
+            )
         for widget, key in mapping:
             if facets.get(key):
-                widget.configure(values=facets[key])
-        self._write_log("ESGF 可选项刷新完成；所有下拉框仍允许手动输入。")
+                current = widget.get()
+                values = facets[key]
+                if dataset == "cordex" and key == "rcm_name":
+                    values = ["不限", *values]
+                widget.set_values(values, current)
+        self._write_log(f"{dataset.upper()} 官方可选项刷新完成。")
 
-    def _preview_ready(self, request: DownloadRequest, items: list[DownloadItem]) -> None:
+    def _query_summary(self, query: object) -> str:
+        if hasattr(query, "model"):
+            return f"{query.model} · {query.experiment} · {query.variable}"
+        if hasattr(query, "driving_model"):
+            return f"{query.domain} · {query.rcm_name} · {query.variable}"
+        return f"{query.variable} · {query.temporal}"
+
+    def _preview_ready(
+        self,
+        request: BatchDownloadRequest,
+        items: list[PlannedItem],
+        query_failures: dict[object, Exception],
+    ) -> None:
         self.items = items
         self.current_request = request
+        self.query_failures = query_failures
         for row in self.tree.get_children():
             self.tree.delete(row)
-        for item in items:
-            self.tree.insert("", "end", values=(item.filename, format_size(item.size), item.source))
-        total = sum(item.size for item in items)
-        self.summary.set(f"匹配 {len(items)} 个文件 · 预计 {format_size(total)} · 输出到 {request.output}")
-        self._write_log(f"查询完成：{len(items)} 个文件，{format_size(total)}。")
+        for planned in items:
+            item = planned.item
+            self.tree.insert(
+                "", "end",
+                values=(item.filename, format_size(item.size), item.source, self._query_summary(planned.query)),
+            )
+        total = sum(planned.item.size for planned in items)
+        unknown = sum(not planned.item.size for planned in items)
+        size_text = format_size(total) if total else "大小由服务器生成"
+        failed_text = f" · {len(query_failures)} 个组合查询失败" if query_failures else ""
+        unknown_text = f" · {unknown} 个大小待生成" if unknown else ""
+        self.summary.set(f"匹配 {len(items)} 个文件 · {size_text}{unknown_text}{failed_text} · 输出到 {request.output}")
+        self._write_log(f"查询完成：{len(items)} 个文件，{len(query_failures)} 个组合失败。")
         if not items:
-            messagebox.showinfo("没有匹配项", "当前组合没有找到可下载文件，请调整模式、成员、变量或时间范围。", parent=self.root)
+            messagebox.showinfo("没有匹配项", "当前组合没有找到可下载文件，请调整筛选条件或年份。", parent=self.root)
 
     def _progress_ready(self, filename: str, downloaded: int, total: int) -> None:
         self.downloaded[filename] = downloaded
         if self.total_bytes:
             self.progress["value"] = min(100, sum(self.downloaded.values()) * 100 / self.total_bytes)
+        elif total:
+            self.progress["value"] = min(99, downloaded * 100 / total)
         self.status.set(f"{filename[:18]} {format_size(downloaded)}/{format_size(total)}")
 
-    def _download_ready(self, completed, failed, processed, process_failed) -> None:
+    def _download_ready(self, package, completed, failed, processed, process_failed) -> None:
         self.progress["value"] = 100 if not failed else self.progress["value"]
-        self._write_log(f"下载完成：成功 {len(completed)}，失败 {len(failed)}；处理输出 {len(processed)}，处理失败 {len(process_failed)}。")
+        self._write_log(
+            f"数据包完成：成功 {len(completed)}，失败 {len(failed)}；处理输出 {len(processed)}，处理失败 {len(process_failed)}。"
+        )
+        self._write_log(f"数据包：{package}")
         for filename, error in {**failed, **process_failed}.items():
             self._write_log(f"失败 · {filename} · {error}")
         if failed or process_failed:
-            messagebox.showwarning("任务部分完成", "部分文件失败，详情请查看任务日志；可直接重试以利用断点续传。", parent=self.root)
+            messagebox.showwarning("任务部分完成", f"部分文件失败；已保留成功文件和报告：\n{package}", parent=self.root)
         else:
-            messagebox.showinfo("任务完成", "所有文件均已完成。", parent=self.root)
+            messagebox.showinfo("任务完成", f"数据包、清单和 SHA256 已生成：\n{package}", parent=self.root)
 
     def _show_worker_error(self, action: str, error: Exception) -> None:
         labels = {"catalog": "刷新可选项", "preview": "查询清单", "download": "下载任务"}
@@ -429,8 +663,10 @@ class ClimateDownloaderApp:
 
     def _set_busy(self, busy: bool, status: str) -> None:
         state = "disabled" if busy else "normal"
+        reserved = DATASETS[self.dataset.get()] == "era5"
         for button in (self.refresh_button, self.preview_button, self.download_button):
-            button.configure(state=state)
+            button.configure(state="disabled" if reserved else state)
+        self.dataset_box.configure(state="disabled" if busy else "readonly")
         self.status.set(status)
 
     def _write_log(self, message: str) -> None:
