@@ -22,7 +22,7 @@ class NetcdfProcessingTests(unittest.TestCase):
                     "lon": [100.0, 110.0, 120.0],
                 },
             )
-            dataset.to_netcdf(source, engine="scipy")
+            dataset.to_netcdf(source)
             options = ProcessOptions(
                 bbox=(105.0, 120.0, 5.0, 20.0),
                 spatial_resolution=5.0,
@@ -46,12 +46,55 @@ class NetcdfProcessingTests(unittest.TestCase):
                 {"pr": (("lat", "lon"), np.ones((2, 4)))},
                 coords={"lat": [0.0, 10.0], "lon": [0.0, 90.0, 180.0, 270.0]},
             )
-            dataset.to_netcdf(source, engine="scipy")
+            dataset.to_netcdf(source)
 
             process_netcdf(source, output, ProcessOptions(bbox=(-100.0, -80.0, -5.0, 15.0)))
 
             with xr.open_dataset(output) as result:
                 self.assertEqual(result.lon.values.tolist(), [270.0])
+
+    def test_handles_prime_meridian_bbox_on_zero_to_360_longitudes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source.nc"
+            output = Path(directory) / "processed.nc"
+            dataset = xr.Dataset(
+                {"pr": (("lat", "lon"), np.ones((2, 4)))},
+                coords={"lat": [0.0, 10.0], "lon": [0.0, 90.0, 180.0, 270.0]},
+            )
+            dataset.to_netcdf(source)
+
+            process_netcdf(source, output, ProcessOptions(bbox=(-100.0, 10.0, -5.0, 15.0)))
+
+            with xr.open_dataset(output) as result:
+                self.assertEqual(result.lon.values.tolist(), [270.0, 0.0])
+
+    def test_rejects_temporal_upsampling(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "monthly.nc"
+            output = Path(directory) / "daily.nc"
+            dataset = xr.Dataset(
+                {"tas": ("time", [1.0, 2.0, 3.0])},
+                coords={"time": np.array(["2000-01-01", "2000-02-01", "2000-03-01"], dtype="datetime64[ns]")},
+            )
+            dataset.to_netcdf(source)
+
+            with self.assertRaisesRegex(ValueError, "更细"):
+                process_netcdf(source, output, ProcessOptions(temporal_scale="daily"))
+
+    def test_minus_180_to_180_selects_full_zero_to_360_grid(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source.nc"
+            output = Path(directory) / "processed.nc"
+            dataset = xr.Dataset(
+                {"tas": (("lat", "lon"), np.ones((2, 4)))},
+                coords={"lat": [0.0, 10.0], "lon": [0.0, 90.0, 180.0, 270.0]},
+            )
+            dataset.to_netcdf(source)
+
+            process_netcdf(source, output, ProcessOptions(bbox=(-180.0, 180.0, -90.0, 90.0)))
+
+            with xr.open_dataset(output) as result:
+                self.assertEqual(result.sizes["lon"], 4)
 
 
 if __name__ == "__main__":

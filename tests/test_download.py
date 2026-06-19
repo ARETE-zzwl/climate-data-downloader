@@ -76,7 +76,32 @@ class DownloadTests(unittest.TestCase):
             self.assertFalse(target.exists())
             self.assertTrue(target.with_suffix(".nc.part").exists())
 
+    def test_next_run_replaces_complete_but_corrupt_part(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            target = output / "cmip6" / "data.nc"
+            target.parent.mkdir(parents=True)
+            target.with_suffix(".nc.part").write_bytes(b"x" * len(CONTENT))
+            item = DownloadItem(
+                self.url, "data.nc", len(CONTENT), hashlib.sha256(CONTENT).hexdigest(), "sha256", "cmip6"
+            )
+
+            download_one(item, output)
+
+            self.assertEqual(target.read_bytes(), CONTENT)
+
+    def test_promotes_complete_part_when_no_checksum_is_available(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            target = output / "nex-gddp-cmip6" / "data.nc"
+            target.parent.mkdir(parents=True)
+            target.with_suffix(".nc.part").write_bytes(CONTENT)
+            item = DownloadItem(self.url, "data.nc", len(CONTENT), source="nex-gddp-cmip6")
+
+            download_one(item, output)
+
+            self.assertEqual(target.read_bytes(), CONTENT)
+
 
 if __name__ == "__main__":
     unittest.main()
-

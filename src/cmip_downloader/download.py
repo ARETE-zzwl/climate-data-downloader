@@ -74,6 +74,14 @@ def download_one(
             return target
         raise FileExistsError(f"目标文件已存在但大小不一致：{target}")
     part = target.with_suffix(target.suffix + ".part")
+    if part.exists() and item.size and part.stat().st_size == item.size:
+        try:
+            if item.checksum and item.checksum_type:
+                _verify_checksum(part, item.checksum, item.checksum_type)
+            os.replace(part, target)
+            return target
+        except ChecksumError:
+            part.unlink()
     for attempt in range(retries + 1):
         try:
             _download_attempt(item, part, progress, timeout)
@@ -113,4 +121,3 @@ def download_many(
             except Exception as error:
                 failed[item.filename] = error
     return completed, failed
-

@@ -36,31 +36,50 @@ def _coordinate_name(dataset, candidates: tuple[str, ...]) -> str:
 def _converted_bbox(dataset, lon_name: str, bbox):
     west, east, south, north = bbox
     longitude = dataset[lon_name]
+    if east - west >= 360:
+        return float(longitude.min()), float(longitude.max()), south, north, False
     if float(longitude.min()) >= 0 and west < 0:
         west, east = west % 360, east % 360
-        if west >= east:
-            raise ValueError("当前版本不支持跨日期变更线的经度范围")
-    return west, east, south, north
+    return west, east, south, north, west > east
 
 
 def _spatial_subset(dataset, options: ProcessOptions):
     import numpy as np
 
+    if options.bbox is None and options.spatial_resolution is None:
+        return dataset
     lat_name = _coordinate_name(dataset, ("lat", "latitude", "y"))
     lon_name = _coordinate_name(dataset, ("lon", "longitude", "x"))
+    if dataset[lat_name].ndim != 1 or dataset[lon_name].ndim != 1:
+        raise ValueError("当前版本的空间处理仅支持一维规则经纬度坐标")
     dataset = dataset.sortby([lat_name, lon_name])
     if options.bbox:
-        west, east, south, north = _converted_bbox(dataset, lon_name, options.bbox)
+        west, east, south, north, wraps = _converted_bbox(dataset, lon_name, options.bbox)
     else:
         west, east = float(dataset[lon_name].min()), float(dataset[lon_name].max())
         south, north = float(dataset[lat_name].min()), float(dataset[lat_name].max())
+        wraps = False
 
     if options.spatial_resolution:
         step = options.spatial_resolution
-        target_lon = np.arange(west, east + step * 0.5, step)
+        if wraps:
+            target_lon = np.concatenate(
+                [
+                    np.arange(west, float(dataset[lon_name].max()) + step * 0.5, step),
+                    np.arange(float(dataset[lon_name].min()), east + step * 0.5, step),
+                ]
+            )
+        else:
+            target_lon = np.arange(west, east + step * 0.5, step)
         target_lat = np.arange(south, north + step * 0.5, step)
         return dataset.interp({lon_name: target_lon, lat_name: target_lat})
     if options.bbox:
+        if wraps:
+            import xarray as xr
+
+            high = dataset.sel({lon_name: slice(west, None), lat_name: slice(south, north)})
+            low = dataset.sel({lon_name: slice(None, east), lat_name: slice(south, north)})
+            return xr.concat([high, low], dim=lon_name)
         return dataset.sel({lon_name: slice(west, east), lat_name: slice(south, north)})
     return dataset
 
@@ -68,6 +87,17 @@ def _spatial_subset(dataset, options: ProcessOptions):
 def _temporal_aggregate(dataset, options: ProcessOptions):
     if options.temporal_scale == "original" or "time" not in dataset.coords:
         return dataset
+    if dataset.sizes.get("time", 0) > 1 and options.temporal_scale in {"daily", "monthly"}:
+        import numpy as np
+
+        delta = dataset["time"].values[1] - dataset["time"].values[0]
+        if hasattr(delta, "total_seconds"):
+            step_days = delta.total_seconds() / 86400
+        else:
+            step_days = float(delta / np.timedelta64(1, "D"))
+        limit = 1.5 if options.temporal_scale == "daily" else 32
+        if step_days > limit:
+            raise ValueError("不能把源数据转换为更细的时间尺度")
     rules = {"daily": "1D", "monthly": "MS", "annual": "YS"}
     resampler = dataset.resample(time=rules[options.temporal_scale])
     return getattr(resampler, options.aggregation)()

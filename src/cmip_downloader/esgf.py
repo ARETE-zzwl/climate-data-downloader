@@ -7,7 +7,9 @@ from .models import DataQuery, DownloadItem
 
 
 SEARCH_ENDPOINT = "https://esgf-node.llnl.gov/esg-search/search"
-_DATE_RANGE = re.compile(r"_(\d{4})\d{4}-(\d{4})\d{4}(?:-[^.]+)?\.nc$")
+_DATE_RANGE = re.compile(
+    r"_(\d{4})(?:\d{2}(?:\d{2})?)?-(\d{4})(?:\d{2}(?:\d{2})?)?(?:-[^.]+)?\.nc$"
+)
 
 
 def _first(value: object) -> str | None:
@@ -19,11 +21,14 @@ def _first(value: object) -> str | None:
 def _httpserver_url(values: object) -> str | None:
     if not isinstance(values, list):
         return None
+    candidates: list[str] = []
     for value in values:
         parts = str(value).split("|")
         if len(parts) >= 3 and parts[-1] == "HTTPServer":
-            return parts[0]
-    return None
+            candidates.append(parts[0])
+    return next((url for url in candidates if url.startswith("https://")), None) or (
+        candidates[0] if candidates else None
+    )
 
 
 def _overlaps(filename: str, start_year: int, end_year: int) -> bool:
@@ -40,7 +45,8 @@ def parse_search_response(payload: dict, query: DataQuery) -> tuple[list[Downloa
     for doc in response.get("docs", []):
         filename = str(doc.get("title", ""))
         url = _httpserver_url(doc.get("url"))
-        if not filename or not url or not _overlaps(filename, query.start_year, query.end_year):
+        unsafe_name = filename in {"", ".", ".."} or "/" in filename or "\\" in filename
+        if unsafe_name or not url or not _overlaps(filename, query.start_year, query.end_year):
             continue
         checksum_type = _first(doc.get("checksum_type"))
         items.append(

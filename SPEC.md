@@ -67,17 +67,20 @@ climate-data-downloader/
 │   ├── __init__.py
 │   ├── __main__.py        # 默认启动 GUI；保留 CLI 自动化入口
 │   ├── app.py             # Tkinter 主界面、状态与后台任务
+│   ├── catalog.py         # NEX 静态目录和 ESGF 动态选项
+│   ├── form.py            # 可测试的表单校验和请求转换
 │   ├── models.py          # 查询条件和下载项
 │   ├── nex.py             # S3 REST 清单查询及版本筛选
 │   ├── esgf.py            # ESGF Search API 查询及 URL 选择
-│   └── download.py        # 断点续传、并发、重试、校验
+│   ├── download.py        # 断点续传、并发、重试、校验
 │   └── process.py         # 裁剪、重采样和时间聚合
 └── tests/
+    ├── test_catalog.py
+    ├── test_form.py
     ├── test_nex.py
     ├── test_esgf.py
     ├── test_download.py
-    ├── test_process.py
-    └── test_cli.py
+    └── test_process.py
 ```
 
 ## Code Style
@@ -135,5 +138,6 @@ class DownloadItem:
 ## Explicit Non-goals
 
 - 首版范围选择是经纬度矩形，不提供交互式地图或行政区/流域矢量多边形。
+- 空间裁剪与重采样仅处理一维规则经纬度坐标；二维曲线海洋网格只下载原始文件。
 - 不声称重采样能提高原始模式精度。
 - 不提供模式集合统计、偏差订正或指数计算。

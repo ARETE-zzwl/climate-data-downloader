@@ -2,7 +2,7 @@ import queue
 import threading
 from datetime import datetime
 from pathlib import Path
-from tkinter import BooleanVar, StringVar, Tk, filedialog, messagebox
+from tkinter import BooleanVar, StringVar, Text, Tk, filedialog, messagebox
 from tkinter import ttk
 
 from . import esgf, nex
@@ -210,7 +210,7 @@ class ClimateDownloaderApp:
         scroll_x.grid(row=1, column=0, sticky="ew")
 
         ttk.Label(parent, text="任务日志", style="Section.TLabel").grid(row=3, column=0, sticky="w", pady=(12, 5))
-        self.log = __import__("tkinter").Text(
+        self.log = Text(
             parent, height=8, bg="#f6f8f8", fg="#29484d", relief="flat", padx=8, pady=6,
             font=("Consolas", 9), state="disabled", wrap="word",
         )
@@ -444,4 +444,3 @@ def launch() -> None:
     root = Tk()
     ClimateDownloaderApp(root)
     root.mainloop()
-

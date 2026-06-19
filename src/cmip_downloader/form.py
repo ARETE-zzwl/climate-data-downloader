@@ -49,9 +49,26 @@ class FormData:
     @classmethod
     def basic(cls, output: str) -> "FormData":
         return cls(
-            "nex", "ACCESS-CM2", "historical", "r1i1p1f1", "pr", "day", "v2.0",
-            "2000", "2014", True, "-180", "180", "-90", "90", "original",
-            "original", "mean", output, "3", True,
+            dataset="nex",
+            model="ACCESS-CM2",
+            experiment="historical",
+            member="r1i1p1f1",
+            variable="pr",
+            table="day",
+            version="v2.0",
+            start_year="2000",
+            end_year="2014",
+            global_area=True,
+            west="-180",
+            east="180",
+            south="-90",
+            north="90",
+            resolution="original",
+            temporal_scale="original",
+            aggregation="mean",
+            output=output,
+            workers="3",
+            keep_raw=True,
         )
 
     def to_request(self) -> DownloadRequest:
@@ -103,4 +120,3 @@ class FormData:
         return DownloadRequest(
             self.dataset, query, process, output, workers, self.keep_raw
         )
-
