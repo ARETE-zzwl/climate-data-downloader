@@ -7,4 +7,5 @@ dist/
 .pytest_cache/
 downloads/
 *.part
-
+release/
+release_install_smoke_*/

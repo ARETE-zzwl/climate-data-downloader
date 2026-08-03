@@ -1,7 +1,6 @@
 @echo off
-chcp 65001 >nul
 cd /d "%~dp0"
-echo 正在检查 Python 运行环境...
+echo Checking Python runtime...
 where py >nul 2>nul
 if %errorlevel%==0 (
   set "PY_CMD=py -3"
@@ -10,35 +9,35 @@ if %errorlevel%==0 (
 )
 %PY_CMD% --version >nul 2>&1
 if errorlevel 1 (
-  echo 未找到 Python。请先安装 Python 3.10 或更高版本，并勾选 Add Python to PATH。
+  echo Python was not found. Please install Python 3.10 or newer and enable Add Python to PATH.
   pause
   exit /b 1
 )
 %PY_CMD% -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)" >nul 2>&1
 if errorlevel 1 (
-  echo Python 版本过低。请安装 Python 3.10 或更高版本。
+  echo Python is too old. Please install Python 3.10 or newer.
   pause
   exit /b 1
 )
 if not exist ".venv\Scripts\python.exe" (
-  echo 正在创建本地运行环境...
+  echo Creating local runtime environment...
   %PY_CMD% -m venv .venv
 )
 if errorlevel 1 (
-  echo 创建虚拟环境失败。
+  echo Failed to create the virtual environment.
   pause
   exit /b 1
 )
-echo 正在安装依赖，首次安装可能需要几分钟...
+echo Installing dependencies. The first install may take a few minutes...
 ".venv\Scripts\python.exe" -m pip install --upgrade pip
 ".venv\Scripts\python.exe" -m pip install --upgrade .
 if errorlevel 1 (
-  echo 安装失败，请检查上方错误和网络连接。
+  echo Installation failed. Please check the messages above and your network connection.
   pause
   exit /b 1
 )
 echo.
-echo 安装完成。以后可直接双击“启动气候数据下载器.bat”或“Start_Climate_Data_Downloader.bat”。
-choice /C YN /M "是否现在启动软件"
+echo Installation complete. You can start the app with Start_Climate_Data_Downloader.bat.
+choice /C YN /M "Start the app now"
 if errorlevel 2 exit /b 0
 call "%~dp0Start_Climate_Data_Downloader.bat"

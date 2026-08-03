@@ -50,12 +50,14 @@ def _run_cli(arguments) -> int:
 
 
 def main() -> int:
-    if len(sys.argv) > 1 and sys.argv[1] in {"nex", "cmip6"}:
-        return _run_cli(_parser().parse_args())
-    launch()
+    if len(sys.argv) == 1:
+        launch()
+        return 0
+    arguments = _parser().parse_args()
+    if arguments.dataset in {"nex", "cmip6"}:
+        return _run_cli(arguments)
     return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

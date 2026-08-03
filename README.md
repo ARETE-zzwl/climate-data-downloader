@@ -21,17 +21,34 @@
 ## Windows 快速开始
 
 1. 安装 Python 3.10 或更高版本，并勾选 “Add Python to PATH”。
-2. 双击 `安装气候数据下载器.bat`。
-3. 双击 `启动气候数据下载器.bat`。
+2. 双击 `Install_Climate_Data_Downloader.bat` 或 `安装气候数据下载器.bat`。
+3. 双击 `Start_Climate_Data_Downloader.bat` 或 `启动气候数据下载器.bat`。
 
 也可在 PowerShell 中运行：
 
 ```powershell
 cd D:\work\climate-data-downloader
 python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -e .
+.\.venv\Scripts\python.exe -m pip install --upgrade .
 .\.venv\Scripts\python.exe -m cmip_downloader
 ```
+
+## 面向用户交付
+
+给普通用户分发时，运行：
+
+```powershell
+.\Build_Release_Package.ps1
+```
+
+脚本会在 `release/` 下生成 ZIP 发布包，并自动排除 `.venv/`、`.git/`、`downloads/` 等本地开发和数据目录。
+
+更多资料：
+
+- [功能说明](docs/功能说明.md)
+- [安装使用说明](docs/安装使用说明.md)
+- [销售发布检查清单](docs/销售发布检查清单.md)
+- [测试报告 2026-08-03](docs/测试报告_2026-08-03.md)
 
 ## 使用流程
 

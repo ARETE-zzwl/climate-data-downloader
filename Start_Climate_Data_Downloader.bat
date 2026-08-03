@@ -1,8 +1,7 @@
 @echo off
-chcp 65001 >nul
 cd /d "%~dp0"
 if not exist ".venv\Scripts\pythonw.exe" (
-  echo 尚未安装。请先双击“安装气候数据下载器.bat”或“Install_Climate_Data_Downloader.bat”。
+  echo The app is not installed yet. Run Install_Climate_Data_Downloader.bat first.
   pause
   exit /b 1
 )
