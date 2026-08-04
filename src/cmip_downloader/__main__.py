@@ -4,6 +4,7 @@ from pathlib import Path
 
 from . import esgf, nex
 from .app import format_size, launch
+from .batch_cli import load_batch_job, run_batch_job
 from .download import download_many
 from .models import DataQuery
 
@@ -23,6 +24,11 @@ def _parser() -> argparse.ArgumentParser:
         command.add_argument("--output", type=Path, default=Path("downloads"))
         command.add_argument("--workers", type=int, default=3)
         command.add_argument("--dry-run", action="store_true")
+    batch = subparsers.add_parser("batch", help="从 JSON 配置批量查询、下载并整理数据包")
+    batch.add_argument("--config", required=True, type=Path, help="批量任务 JSON 配置文件")
+    batch.add_argument("--output", type=Path, help="覆盖配置文件中的输出目录")
+    batch.add_argument("--workers", type=int, help="覆盖配置文件中的并发数")
+    batch.add_argument("--dry-run", action="store_true", help="只查询/规划清单，不下载文件")
     return parser
 
 
@@ -49,6 +55,23 @@ def _run_cli(arguments) -> int:
     return 1 if failed else 0
 
 
+def _run_batch_cli(arguments) -> int:
+    try:
+        job = load_batch_job(arguments.config, arguments.output, arguments.workers)
+        result = run_batch_job(job, dry_run=arguments.dry_run)
+    except (ValueError, OSError) as error:
+        print(f"错误：{error}", file=sys.stderr)
+        return 2
+    action = "规划" if arguments.dry_run else "完成"
+    print(
+        f"批量任务{action}：清单 {result.planned_count} 个，"
+        f"完成 {result.completed_count} 个，失败 {result.failed_count} 个。"
+    )
+    if result.package:
+        print(f"数据包：{result.package}")
+    return result.exit_code
+
+
 def main() -> int:
     if len(sys.argv) == 1:
         launch()
@@ -56,6 +79,8 @@ def main() -> int:
     arguments = _parser().parse_args()
     if arguments.dataset in {"nex", "cmip6"}:
         return _run_cli(arguments)
+    if arguments.dataset == "batch":
+        return _run_batch_cli(arguments)
     return 0
 
 

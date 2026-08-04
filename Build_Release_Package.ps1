@@ -33,6 +33,8 @@ function Copy-CleanTree {
 }
 
 $items = @(
+  "Build_Portable_App.ps1",
+  "Build_Release_Package.ps1",
   "pyproject.toml",
   "README.md",
   "SPEC.md",
@@ -41,6 +43,9 @@ $items = @(
 
 Copy-CleanTree -Source (Join-Path $root "src") -Destination (Join-Path $stage "src")
 Copy-CleanTree -Source (Join-Path $root "docs") -Destination (Join-Path $stage "docs")
+Copy-CleanTree -Source (Join-Path $root "examples") -Destination (Join-Path $stage "examples")
+Copy-CleanTree -Source (Join-Path $root "packaging") -Destination (Join-Path $stage "packaging")
+Copy-CleanTree -Source (Join-Path $root "tests") -Destination (Join-Path $stage "tests")
 
 foreach ($item in $items) {
   $source = Join-Path $root $item

@@ -9,3 +9,4 @@ downloads/
 *.part
 release/
 release_install_smoke_*/
+portable_smoke_*/

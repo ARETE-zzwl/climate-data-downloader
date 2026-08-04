@@ -1,0 +1,13 @@
+{
+  "dataset": "nex",
+  "models": ["MPI-ESM1-2-HR"],
+  "experiments": ["ssp126", "ssp245", "ssp585"],
+  "members": ["r1i1p1f1"],
+  "variables": ["tas", "pr"],
+  "tables": ["day"],
+  "version": "v2.0",
+  "years": [2025, 2025],
+  "output": "downloads/nex_batch_example",
+  "workers": 3,
+  "keep_raw": true
+}

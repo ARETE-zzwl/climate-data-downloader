@@ -1,0 +1,10 @@
+{
+  "dataset": "power",
+  "variables": ["T2M"],
+  "temporals": ["daily"],
+  "years": [2020, 2020],
+  "bbox": [116, 118, 38, 40],
+  "output": "downloads/power_batch_small",
+  "workers": 1,
+  "keep_raw": true
+}

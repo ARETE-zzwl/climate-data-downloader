@@ -1,105 +1,128 @@
 # 气候数据下载器
 
-面向 Windows 的图形化气候数据下载与整理工具，支持 NEX-GDDP-CMIP6、CMIP6、CORDEX 和 NASA POWER；ERA5 / ERA5-Land 已预留入口。
+面向 Windows 的图形化气候数据下载与整理工具，支持 NEX-GDDP-CMIP6、CMIP6、CORDEX 和 NASA POWER；ERA5 / ERA5-Land 当前保留入口，后续可接入用户自己的 Copernicus CDS 凭据。
 
-## 主要功能
+## 当前可交付形态
 
-- 可搜索多选：模式、情景/试验、成员、变量、table/频率，以及 CORDEX 区域域和 RCM 均可勾选多项。
-- 批量检索：自动展开筛选组合、并行查询、跨组合去重；单次最多 500 个组合，防止误发海量请求。
-- 自由范围：年份、全球或矩形经纬度、输出网格间距、日/月/年尺度和聚合方式。
-- 稳健下载：下载前预览，并发、重试、断点续传，以及源站提供的 MD5/SHA 校验。
-- 自动整理：每次任务生成独立数据包，含分层原始/处理数据、来源清单、SHA256 和失败报告。
+### 1. 免 Python 便携包（推荐销售给普通用户）
 
-## 数据源
-
-- **NEX-GDDP-CMIP6**：NASA 官方数据，使用 AWS Open Data 公共镜像，无需账户。
-- **CMIP6**：通过 LLNL ESGF 官方联邦检索获得原始模式文件。
-- **CORDEX**：通过 DKRZ ESGF 官方索引检索 WCRP 区域气候模式数据。
-- **NASA POWER**：NASA LaRC 官方区域 API，无需 API key。区域接口要求经纬度各至少跨越 2°；多选变量会拆成多个请求再统一打包。
-- **ERA5 / ERA5-Land**：当前只保留界面和适配器位置。正式启用需要用户自己的 Copernicus CDS 账户、许可确认和 API key；本版本不读取或保存凭据。
-
-## Windows 快速开始
-
-1. 安装 Python 3.10 或更高版本，并勾选 “Add Python to PATH”。
-2. 双击 `Install_Climate_Data_Downloader.bat` 或 `安装气候数据下载器.bat`。
-3. 双击 `Start_Climate_Data_Downloader.bat` 或 `启动气候数据下载器.bat`。
-
-也可在 PowerShell 中运行：
+运行：
 
 ```powershell
-cd D:\work\climate-data-downloader
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install --upgrade .
-.\.venv\Scripts\python.exe -m cmip_downloader
+.\Build_Portable_App.ps1
 ```
 
-## 面向用户交付
+生成：
 
-给普通用户分发时，运行：
+```text
+release\ClimateDataDownloader_0.1.0_portable_YYYYMMDD_HHMMSS.zip
+```
+
+用户解压后直接双击：
+
+```text
+ClimateDataDownloader.exe
+```
+
+命令行和批量任务入口：
+
+```text
+ClimateDataDownloaderCLI.exe
+```
+
+说明：该包已内置 Python 运行时和依赖库，用户电脑不需要安装 Python。当前生成的是“便携 ZIP 包”，不是带向导的安装器；代码签名参数已经预留，提供证书后可签名。
+
+### 2. 源码安装包（仍要求用户安装 Python 3.10+）
+
+运行：
 
 ```powershell
 .\Build_Release_Package.ps1
 ```
 
-脚本会在 `release/` 下生成 ZIP 发布包，并自动排除 `.venv/`、`.git/`、`downloads/` 等本地开发和数据目录。
+生成：
 
-更多资料：
+```text
+release\ClimateDataDownloader_0.1.0_windows_YYYYMMDD_HHMMSS.zip
+```
 
-- [功能说明](docs/功能说明.md)
-- [安装使用说明](docs/安装使用说明.md)
-- [销售发布检查清单](docs/销售发布检查清单.md)
-- [测试报告 2026-08-03](docs/测试报告_2026-08-03.md)
+用户需要先安装 Python 3.10+，再双击安装脚本。
 
-## 使用流程
+## 主要功能
 
-1. 选择数据源，点击各筛选按钮，在搜索窗口中勾选一个或多个值。
-2. 需要完整候选列表时点击“刷新官方可选项”。
-3. 在“范围与输出”页设置年份、区域、空间分辨率、时间尺度和输出目录。
-4. 点击“查询清单”，核对文件、组合和大小。
-5. 点击“下载并整理”。任务结束后，界面日志会显示数据包路径。
+- 图形化多选筛选：模式、情景/试验、成员、变量、table/频率、CORDEX 区域域、RCM 等。
+- 批量组合查询：自动展开多选组合，支持 dry-run 预览清单。
+- 多源下载：NEX-GDDP-CMIP6、CMIP6、CORDEX、NASA POWER。
+- 数据整理：每次任务生成独立数据包，包含原始数据、处理数据、manifest、SHA256、失败报告。
+- 后处理：经纬度裁剪、空间重采样、日/月/年尺度转换和聚合。
+- 批量 JSON：适合给高级用户或售后场景批量下载固定方案。
 
-数据包结构：
+## 批量下载示例
+
+免 Python 便携包中：
+
+```powershell
+.\ClimateDataDownloaderCLI.exe batch --config .\examples\power_batch_small.json --dry-run
+.\ClimateDataDownloaderCLI.exe batch --config .\examples\power_batch_small.json --output .\downloads\power_batch_small
+```
+
+源码开发环境中：
+
+```powershell
+.\.venv\Scripts\python.exe -m cmip_downloader batch --config .\examples\nex_batch_dry_run.json --dry-run
+```
+
+示例配置见：
+
+- `examples\power_batch_small.json`
+- `examples\nex_batch_dry_run.json`
+
+## 数据源是否官方
+
+下载入口使用官方或官方公开镜像：
+
+- NEX-GDDP-CMIP6：NASA NEX 数据集，下载使用 AWS Open Data 公共镜像。
+- CMIP6：LLNL ESGF 官方联合检索。
+- CORDEX：DKRZ ESGF 官方索引。
+- NASA POWER：NASA POWER 官方 API。
+- ERA5 / ERA5-Land：当前仅预留入口，正式下载需要用户自己的 Copernicus CDS 账号和授权。
+
+软件本身是下载与整理工具，不声称拥有第三方数据版权。商业销售时应明确数据来源、引用要求和许可证边界。
+
+## 数据包结构
 
 ```text
 climate_package_YYYYMMDD_HHMMSS/
-├── README.txt
-├── manifest.json
-├── checksums.sha256
-├── raw/{dataset}/{model}/{experiment}/{member}/{table}/{variable}/
-├── processed/{dataset}/{model}/{experiment}/{member}/{table}/{variable}/
-└── reports/
-    ├── download_report.json
-    └── failed_items.csv
+├─ README.txt
+├─ manifest.json
+├─ checksums.sha256
+├─ raw/{dataset}/{model}/{experiment}/{member}/{table}/{variable}/
+├─ processed/{dataset}/{model}/{experiment}/{member}/{table}/{variable}/
+└─ reports/
+   ├─ download_report.json
+   └─ failed_items.csv
 ```
-
-`manifest.json` 保存筛选条件、处理参数、官方来源 URL、期望大小、源站校验值和本地相对路径。`checksums.sha256` 可重新验证成功文件。部分组合或文件失败时，成功数据不会被删除。
-
-## 精度说明
-
-空间重采样只改变网格间距，不会提高源数据的真实物理精度。区域裁剪在完整文件下载后本地执行，因此磁盘应能容纳原始文件和处理结果。常见的一维规则经纬网格支持裁剪和重采样；二维曲线网格仍可下载，但本地空间处理会明确提示不支持。
-
-## 命令行兼容入口
-
-原有 NEX / CMIP6 单组合命令仍保留：
-
-```powershell
-climatedl nex --model ACCESS-CM2 --experiment historical --member r1i1p1f1 `
-  --variable pr --years 2000:2001 --dry-run
-```
-
-多源、多选和数据包整理以图形界面为主。
 
 ## 测试
 
 ```powershell
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
+.\.venv\Scripts\python.exe -m compileall -q src tests
+.\.venv\Scripts\python.exe -m pip check
 ```
+
+## 文档
+
+- [功能说明](docs/功能说明.md)
+- [安装使用说明](docs/安装使用说明.md)
+- [销售发布检查清单](docs/销售发布检查清单.md)
+- [测试报告 2026-08-04](docs/测试报告_2026-08-04.md)
 
 ## 官方入口
 
 - [NASA NEX-GDDP-CMIP6](https://www.nccs.nasa.gov/services/data-collections/land-based-products/nex-gddp-cmip6)
 - [AWS Open Data: NEX-GDDP-CMIP6](https://registry.opendata.aws/nex-gddp-cmip6/)
 - [ESGF CMIP6](https://esgf-node.llnl.gov/search/cmip6/)
-- [DKRZ ESGF](https://esgf-data.dkrz.de/search/cordex-dkrz/)
+- [DKRZ ESGF CORDEX](https://esgf-data.dkrz.de/search/cordex-dkrz/)
 - [NASA POWER API](https://power.larc.nasa.gov/docs/services/api/)
 - [Copernicus Climate Data Store](https://cds.climate.copernicus.eu/)

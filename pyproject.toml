@@ -16,6 +16,11 @@ dependencies = [
   "netCDF4>=1.6",
 ]
 
+[project.optional-dependencies]
+build = [
+  "pyinstaller>=6.0",
+]
+
 [project.scripts]
 climatedl = "cmip_downloader.__main__:main"
 
