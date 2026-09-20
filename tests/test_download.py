@@ -102,6 +102,18 @@ class DownloadTests(unittest.TestCase):
 
             self.assertEqual(target.read_bytes(), CONTENT)
 
+    def test_reports_progress_before_first_network_chunk(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            item = DownloadItem(self.url, "data.nc", len(CONTENT), source="cmip6")
+            events = []
+
+            download_one(item, output, progress=lambda *event: events.append(event))
+
+            self.assertGreaterEqual(len(events), 2)
+            self.assertEqual(events[0], ("data.nc", 0, len(CONTENT)))
+            self.assertEqual(events[-1], ("data.nc", len(CONTENT), len(CONTENT)))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -13,6 +13,7 @@ from .models import DownloadItem
 
 
 ProgressCallback = Callable[[str, int, int], None]
+DOWNLOAD_CHUNK_SIZE = 64 * 1024
 
 
 class DownloadError(RuntimeError):
@@ -47,6 +48,8 @@ def _download_attempt(
     headers = {"User-Agent": "climate-data-downloader/0.1"}
     if existing:
         headers["Range"] = f"bytes={existing}-"
+    if progress:
+        progress(item.filename, existing, item.size)
     request = urllib.request.Request(item.url, headers=headers)
     context = ssl.create_default_context(cafile=certifi.where()) if item.url.startswith("https://") else None
     with urllib.request.urlopen(request, timeout=timeout, context=context) as response:
@@ -55,7 +58,7 @@ def _download_attempt(
         downloaded = existing if resumed else 0
         with part.open(mode) as file:
             while True:
-                chunk = response.read(1024 * 1024)
+                chunk = response.read(DOWNLOAD_CHUNK_SIZE)
                 if not chunk:
                     break
                 file.write(chunk)
