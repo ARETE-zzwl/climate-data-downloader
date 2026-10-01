@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 import numpy as np
@@ -9,6 +10,17 @@ from cmip_downloader.process import ProcessOptions, process_netcdf
 
 
 class NetcdfProcessingTests(unittest.TestCase):
+    def test_failed_write_preserves_previous_processed_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'source.nc'
+            output = Path(directory) / 'processed.nc'
+            xr.Dataset({'tas': ('lat', [1.0])}, coords={'lat': [0.0]}).to_netcdf(source)
+            output.write_bytes(b'previous-valid-output')
+            with patch.object(xr.Dataset, 'to_netcdf', side_effect=OSError('disk full')):
+                with self.assertRaises(OSError):
+                    process_netcdf(source, output, ProcessOptions())
+            self.assertEqual(output.read_bytes(), b'previous-valid-output')
+
     def test_crops_resamples_and_aggregates_monthly(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "source.nc"

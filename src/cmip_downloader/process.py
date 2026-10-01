@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from pathlib import Path
+import os
 
 
 @dataclass(frozen=True)
@@ -118,5 +119,7 @@ def process_netcdf(source: Path, output: Path, options: ProcessOptions) -> Path:
             "Processed by climate-data-downloader; resampling changes grid spacing, "
             "not the physical accuracy of the source model."
         )
-        result.to_netcdf(output)
+        temporary = output.with_suffix(output.suffix + '.part')
+        result.to_netcdf(temporary)
+        os.replace(temporary, output)
     return output

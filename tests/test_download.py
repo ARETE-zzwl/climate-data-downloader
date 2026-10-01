@@ -4,8 +4,9 @@ import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from unittest.mock import patch, MagicMock
 
-from cmip_downloader.download import ChecksumError, download_one
+from cmip_downloader.download import ChecksumError, DownloadError, DownloadPaused, download_one, download_many
 from cmip_downloader.models import DownloadItem
 
 
@@ -31,6 +32,72 @@ class RangeHandler(BaseHTTPRequestHandler):
 
 
 class DownloadTests(unittest.TestCase):
+    def test_pause_in_flight_stops_next_file_and_can_resume(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            stop = threading.Event()
+            items = [DownloadItem(self.url, name, len(CONTENT), source='cmip6')
+                     for name in ('first.nc', 'second.nc')]
+            def progress(name, size, total):
+                if size:
+                    stop.set()
+            completed, failed = download_many(items, output, workers=1, progress=progress, stop_event=stop)
+            self.assertFalse(completed)
+            self.assertIsInstance(failed['first.nc'], DownloadPaused)
+            self.assertFalse((output / 'cmip6' / 'second.nc.part').exists())
+            completed, failed = download_many(items, output, workers=1)
+            self.assertEqual(len(completed), 2)
+            self.assertFalse(failed)
+            self.assertTrue(all(path.read_bytes() == CONTENT for path in completed))
+
+    def test_pause_preserves_partial_file_for_resume(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            target = output / 'cmip6' / 'data.nc'
+            target.parent.mkdir()
+            partial = target.with_suffix('.nc.part')
+            partial.write_bytes(CONTENT[:100])
+            stop = threading.Event()
+            stop.set()
+            item = DownloadItem(self.url, 'data.nc', len(CONTENT), source='cmip6')
+            with self.assertRaises(DownloadPaused):
+                download_one(item, output, stop_event=stop)
+            self.assertEqual(partial.read_bytes(), CONTENT[:100])
+            download_one(item, output)
+            self.assertEqual(target.read_bytes(), CONTENT)
+
+    def test_rejects_wrong_range_before_appending(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            target = output / 'cmip6' / 'data.nc'
+            target.parent.mkdir()
+            partial = target.with_suffix('.nc.part')
+            partial.write_bytes(CONTENT[:100])
+            response = MagicMock()
+            response.__enter__.return_value = response
+            response.status = 206
+            response.headers = {'Content-Range': f'bytes 0-{len(CONTENT)-1}/{len(CONTENT)}'}
+            item = DownloadItem(self.url, 'data.nc', len(CONTENT), source='cmip6')
+            with patch('cmip_downloader.download.urllib.request.urlopen', return_value=response):
+                with self.assertRaisesRegex(DownloadError, 'Range'):
+                    download_one(item, output, retries=0)
+            self.assertEqual(partial.read_bytes(), CONTENT[:100])
+
+    def test_existing_file_is_checksummed_and_reports_progress(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            target = output / 'cmip6' / 'data.nc'
+            target.parent.mkdir()
+            target.write_bytes(CONTENT)
+            events = []
+            item = DownloadItem(self.url, 'data.nc', len(CONTENT),
+                                hashlib.sha256(CONTENT).hexdigest(), 'sha256', 'cmip6')
+            download_one(item, output, progress=lambda *e: events.append(e))
+            self.assertEqual(events[-1][1], len(CONTENT))
+            target.write_bytes(b'x' * len(CONTENT))
+            with self.assertRaises(ChecksumError):
+                download_one(item, output)
+
     @classmethod
     def setUpClass(cls):
         cls.server = ThreadingHTTPServer(("127.0.0.1", 0), RangeHandler)

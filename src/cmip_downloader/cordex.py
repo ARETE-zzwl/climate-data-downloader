@@ -1,4 +1,5 @@
 import json
+from .network import open_url
 import ssl
 import urllib.parse
 import urllib.request
@@ -144,7 +145,7 @@ def fetch_files(query: CordexQuery, timeout: int = 120) -> list[DownloadItem]:
     found: dict[str, DownloadItem] = {}
     while True:
         request = urllib.request.Request(build_search_url(query, offset, limit))
-        with urllib.request.urlopen(
+        with open_url(
             request, timeout=timeout, context=_ssl_context()
         ) as response:
             items, total = parse_search_response(json.load(response), query)
@@ -166,7 +167,7 @@ def fetch_facets(timeout: int = 120) -> dict[str, list[str]]:
         "format": "application/solr+json",
     }
     url = f"{SEARCH_ENDPOINT}?{urllib.parse.urlencode(params)}"
-    with urllib.request.urlopen(url, timeout=timeout, context=_ssl_context()) as response:
+    with open_url(url, timeout=timeout, context=_ssl_context()) as response:
         payload = json.load(response)
     fields = payload.get("facet_counts", {}).get("facet_fields", {})
     parsed: dict[str, list[str]] = {}

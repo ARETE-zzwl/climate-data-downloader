@@ -4,6 +4,7 @@ import urllib.parse
 import urllib.request
 
 from .models import DataQuery, DownloadItem
+from .network import open_url
 
 
 SEARCH_ENDPOINT = "https://esgf-node.llnl.gov/esg-search/search"
@@ -86,7 +87,7 @@ def fetch_files(query: DataQuery, timeout: int = 120) -> list[DownloadItem]:
     found: dict[str, DownloadItem] = {}
     while True:
         request = urllib.request.Request(build_search_url(query, offset, limit))
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with open_url(request, timeout=timeout) as response:
             items, total = parse_search_response(json.load(response), query)
         for item in items:
             found.setdefault(item.filename, item)

@@ -3,6 +3,7 @@ import urllib.parse
 import urllib.request
 
 from .esgf import SEARCH_ENDPOINT
+from .network import open_url
 
 
 NEX_MODELS = [
@@ -41,5 +42,5 @@ def fetch_esgf_facets(timeout: int = 120) -> dict[str, list[str]]:
         "format": "application/solr+json",
     }
     url = f"{SEARCH_ENDPOINT}?{urllib.parse.urlencode(params)}"
-    with urllib.request.urlopen(url, timeout=timeout) as response:
+    with open_url(url, timeout=timeout) as response:
         return parse_facets(json.load(response))

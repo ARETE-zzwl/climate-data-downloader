@@ -4,6 +4,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 
 from .models import DataQuery, DownloadItem
+from .network import open_url
 
 
 S3_ENDPOINT = "https://nex-gddp-cmip6.s3.us-west-2.amazonaws.com"
@@ -52,7 +53,7 @@ def fetch_files(query: DataQuery, timeout: int = 60) -> list[DownloadItem]:
         if token:
             params["continuation-token"] = token
         url = f"{S3_ENDPOINT}/?{urllib.parse.urlencode(params)}"
-        with urllib.request.urlopen(url, timeout=timeout) as response:
+        with open_url(url, timeout=timeout) as response:
             page, token = parse_listing(response.read().decode("utf-8"), query)
         found.extend(page)
         if not token:
