@@ -1,4 +1,5 @@
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -7,6 +8,7 @@ from .app import format_size, launch
 from .batch_cli import load_batch_job, run_batch_job
 from .download import download_many
 from .models import DataQuery
+from .tasks import run_task, verify_package, load_task
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -24,11 +26,19 @@ def _parser() -> argparse.ArgumentParser:
         command.add_argument("--output", type=Path, default=Path("downloads"))
         command.add_argument("--workers", type=int, default=3)
         command.add_argument("--dry-run", action="store_true")
+        command.add_argument('--direct', action='store_true', help='本次运行绕过系统代理')
     batch = subparsers.add_parser("batch", help="从 JSON 配置批量查询、下载并整理数据包")
     batch.add_argument("--config", required=True, type=Path, help="批量任务 JSON 配置文件")
     batch.add_argument("--output", type=Path, help="覆盖配置文件中的输出目录")
     batch.add_argument("--workers", type=int, help="覆盖配置文件中的并发数")
     batch.add_argument("--dry-run", action="store_true", help="只查询/规划清单，不下载文件")
+    batch.add_argument('--direct', action='store_true', help='本次运行绕过系统代理')
+    resume = subparsers.add_parser('resume', help='恢复含 task.json 的数据包，跳过已完成文件')
+    resume.add_argument('--package', required=True, type=Path)
+    resume.add_argument('--workers', type=int, default=3)
+    resume.add_argument('--direct', action='store_true', help='本次运行绕过系统代理')
+    verify = subparsers.add_parser('verify', help='按 SHA256 清单检查数据包')
+    verify.add_argument('--package', required=True, type=Path)
     return parser
 
 
@@ -77,10 +87,28 @@ def main() -> int:
         launch()
         return 0
     arguments = _parser().parse_args()
+    if getattr(arguments, 'direct', False):
+        os.environ['CLIMATE_DIRECT'] = '1'
     if arguments.dataset in {"nex", "cmip6"}:
         return _run_cli(arguments)
     if arguments.dataset == "batch":
         return _run_batch_cli(arguments)
+    if arguments.dataset == 'resume':
+        try:
+            package, completed, failed, processed, process_failed = run_task(
+                arguments.package, arguments.workers, status=print)
+            print(f'数据包：{package}；完成 {len(completed)}，下载失败 {len(failed)}，处理失败 {len(process_failed)}')
+            return 1 if failed or process_failed or load_task(package)['data'].get('query_failures') else 0
+        except (ValueError, OSError) as error:
+            print(f'恢复失败：{error}', file=sys.stderr)
+            return 2
+    if arguments.dataset == 'verify':
+        try:
+            print(f'校验通过：{verify_package(arguments.package)} 个文件')
+            return 0
+        except (ValueError, OSError) as error:
+            print(f'校验失败：{error}', file=sys.stderr)
+            return 1
     return 0
 
 

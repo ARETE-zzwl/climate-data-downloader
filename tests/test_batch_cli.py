@@ -128,7 +128,7 @@ class BatchCliConfigTests(unittest.TestCase):
             )
             job = load_batch_job(config)
             with patch("cmip_downloader.batch_cli.fetch_planned_items", return_value=(planned, {})):
-                with patch("cmip_downloader.batch_cli.download_many") as download_many:
+                with patch("cmip_downloader.batch_cli.run_task") as download_many:
                     result = run_batch_job(job, dry_run=True)
 
         self.assertEqual(result.exit_code, 0)

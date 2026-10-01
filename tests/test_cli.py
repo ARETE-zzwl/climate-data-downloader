@@ -28,6 +28,18 @@ class CliEntryPointTests(unittest.TestCase):
 
         launch.assert_called_once_with()
 
+    def test_verify_reports_corruption_as_failure(self):
+        with patch.object(sys, 'argv', ['cmip_downloader', 'verify', '--package', 'test-package']):
+            with patch.object(cli, 'verify_package', side_effect=ValueError('SHA256 mismatch')):
+                self.assertEqual(cli.main(), 1)
+
+    def test_resume_uses_requested_package_and_workers(self):
+        with patch.object(sys, 'argv', ['cmip_downloader', 'resume', '--package', 'test-package', '--workers', '2']):
+            with patch.object(cli, 'run_task', return_value=(Path('test-package'), [], {}, [], {})) as run:
+                with patch.object(cli, 'load_task', return_value={'data': {}}):
+                    self.assertEqual(cli.main(), 0)
+                self.assertEqual(run.call_args.args, (Path('test-package'), 2))
+
     def test_batch_command_runs_configured_batch_job(self):
         with tempfile.TemporaryDirectory() as temp:
             config = Path(temp) / "batch.json"

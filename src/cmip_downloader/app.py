@@ -1,20 +1,22 @@
 import queue
+import os
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 from tkinter import BooleanVar, StringVar, Text, Tk, filedialog, messagebox
 from tkinter import ttk
 
-from . import cordex, esgf, nex
+from . import cordex, esgf, nex, noaa
 from .batch import PlannedItem, fetch_batch
 from .catalog import NEX_EXPERIMENTS, NEX_MODELS, NEX_VARIABLES, fetch_esgf_facets
-from .download import download_many
 from .era5 import AVAILABILITY_MESSAGE
 from .form import BatchDownloadRequest, BatchFormData
 from .multi_select import MultiSelectField
-from .package import finalize_package, prepare_package
+from .tasks import create_task, load_task, run_task
+from .progress import ProgressBuffer
 from .power import POWER_VARIABLES, PowerSelection, plan_files
-from .process import ProcessOptions, process_netcdf
+from .process import ProcessOptions
 
 
 DATASETS = {
@@ -22,6 +24,8 @@ DATASETS = {
     "CMIP6（原始模式数据）": "cmip6",
     "CORDEX（区域气候模式）": "cordex",
     "NASA POWER（气象与太阳能）": "power",
+    "NOAA CPC（全球逐日降水）": "noaa_cpc",
+    "NOAA NCEP/NCAR（逐日再分析）": "noaa_ncep",
     "ERA5 / ERA5-Land（预留）": "era5",
 }
 TEMPORAL_SCALES = {"保持原尺度": "original", "日": "daily", "月": "monthly", "年": "annual"}
@@ -42,11 +46,11 @@ def format_size(size: int) -> str:
     if not size:
         return "服务器生成"
     value = float(size)
-    for unit in ("B", "KB", "MB", "GB", "TB"):
-        if value < 1024 or unit == "TB":
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if value < 1024 or unit == "TiB":
             return f"{value:.1f} {unit}"
         value /= 1024
-    return f"{value:.1f} TB"
+    return f"{value:.1f} TiB"
 
 
 class ClimateDownloaderApp:
@@ -58,11 +62,20 @@ class ClimateDownloaderApp:
         self.query_failures: dict[object, Exception] = {}
         self.downloaded: dict[str, int] = {}
         self.total_bytes = 0
+        self.progress_buffer = ProgressBuffer()
+        self.stop_event = threading.Event()
+        self.busy = False
+        self.downloading = False
+        self.active_package = None
+        self.last_activity = time.monotonic()
+        self.speed_time = self.last_activity
+        self.speed_bytes = 0
         self._variables()
         self._configure_window()
         self._build_ui()
         self._dataset_changed()
         self.root.after(100, self._poll_events)
+        self.root.protocol('WM_DELETE_WINDOW', self._close)
 
     def _variables(self) -> None:
         home = Path.home() / "climate-data"
@@ -80,6 +93,7 @@ class ClimateDownloaderApp:
         self.aggregation = StringVar(value="平均值")
         self.output = StringVar(value=str(home))
         self.workers = StringVar(value="3")
+        self.connection = StringVar(value='直连' if os.environ.get('CLIMATE_DIRECT') == '1' else '系统代理')
         self.keep_raw = BooleanVar(value=True)
         self.summary = StringVar(value="尚未查询文件清单")
         self.status = StringVar(value="就绪")
@@ -111,7 +125,7 @@ class ClimateDownloaderApp:
         ttk.Label(header, text="气候数据下载器", style="Header.TLabel").pack(anchor="w")
         ttk.Label(
             header,
-            text="NEX · CMIP6 · CORDEX · NASA POWER｜多选批量检索、断点续传与自描述数据包",
+            text="NEX · CMIP6 · CORDEX · NASA POWER · NOAA｜批量下载与任务恢复",
             style="Subheader.TLabel",
         ).pack(anchor="w", pady=(3, 0))
 
@@ -197,6 +211,7 @@ class ClimateDownloaderApp:
         ttk.Entry(output_row, textvariable=self.output).grid(row=0, column=0, sticky="ew")
         ttk.Button(output_row, text="浏览", command=self._browse_output).grid(row=0, column=1, padx=(5, 0))
         self._combo(output_tab, 7, "并发下载数", self.workers, [str(number) for number in range(1, 9)], readonly=True)
+        self.connection_box = self._combo(output_tab, 9, '连接方式', self.connection, ['系统代理', '直连'], readonly=True)
         ttk.Checkbutton(output_tab, text="处理完成后保留原始文件", variable=self.keep_raw).grid(
             row=8, column=0, columnspan=2, sticky="w", pady=(8, 0)
         )
@@ -239,11 +254,15 @@ class ClimateDownloaderApp:
         footer.columnconfigure(0, weight=1)
         self.progress = ttk.Progressbar(footer, mode="determinate", maximum=100)
         self.progress.grid(row=0, column=0, sticky="ew", padx=(0, 10))
-        ttk.Label(footer, textvariable=self.status, width=18).grid(row=0, column=1, padx=(0, 12))
+        ttk.Label(footer, textvariable=self.status, wraplength=1100).grid(row=1, column=0, columnspan=6, sticky='w', pady=(8, 0))
         self.preview_button = ttk.Button(footer, text="1. 查询清单", command=self._preview)
         self.preview_button.grid(row=0, column=2, padx=(0, 8))
         self.download_button = ttk.Button(footer, text="2. 下载并整理", style="Accent.TButton", command=self._start_download)
         self.download_button.grid(row=0, column=3)
+        self.resume_button = ttk.Button(footer, text='恢复任务…', command=self._resume_task)
+        self.resume_button.grid(row=0, column=4, padx=8)
+        self.pause_button = ttk.Button(footer, text='暂停', command=self._pause_task, state='disabled')
+        self.pause_button.grid(row=0, column=5)
 
     def _combo(self, parent, row, label, variable, values, readonly=False):
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=5, padx=(0, 8))
@@ -315,6 +334,18 @@ class ClimateDownloaderApp:
             self.variable_field.set_values(CORDEX_VARIABLES, ["areacella"])
             self.table_field.set_values(CORDEX_FREQUENCIES, ["fx"])
             self.source_hint.configure(text="CORDEX：WCRP 区域气候数据，通过 DKRZ ESGF 官方索引检索；区域域、驱动模式和 RCM 可独立多选。")
+        elif dataset in noaa.VARIABLES:
+            for label, field in ((self.model_label, self.model_field),
+                                 (self.experiment_label, self.experiment_field),
+                                 (self.member_label, self.member_field)):
+                self._show_filter(label, field, False)
+            self.variable_field.set_values(noaa.VARIABLES[dataset], [noaa.VARIABLES[dataset][0]])
+            self.table_field.set_values(['day'], ['day'])
+            self.table_field.configure(state='disabled')
+            hint = ('CPC：0.5° 全球陆地站点分析降水，1979 年起，precip 单位 mm/day。'
+                    if dataset == 'noaa_cpc' else
+                    'NCEP/NCAR：2.5° 逐日再分析，1948 年起。air 为 sigma=0.995 近地面气温（不是 2m 气温）；slp 为海平面气压。')
+            self.source_hint.configure(text=hint + ' NOAA PSL 官方 NetCDF，按年下载；区域裁剪在本地执行。')
         elif dataset == "power":
             for label, field in (
                 (self.model_label, self.model_field),
@@ -390,6 +421,7 @@ class ClimateDownloaderApp:
         return start, end, workers, output, bbox, process
 
     def _validated_request(self) -> BatchDownloadRequest | None:
+        self._apply_connection()
         dataset = DATASETS[self.dataset.get()]
         if dataset == "era5":
             messagebox.showinfo("ERA5 预留入口", AVAILABILITY_MESSAGE, parent=self.root)
@@ -415,6 +447,10 @@ class ClimateDownloaderApp:
                     self.member_field.get(), self.rcm_field.get(), self.variable_field.get(),
                     self.table_field.get(), start, end,
                 )
+                selection.expand_queries()
+                request = BatchDownloadRequest(selection, process, output, workers, self.keep_raw.get())
+            elif dataset in noaa.VARIABLES:
+                selection = noaa.NoaaSelection(dataset, self.variable_field.get(), start, end)
                 selection.expand_queries()
                 request = BatchDownloadRequest(selection, process, output, workers, self.keep_raw.get())
             else:
@@ -445,8 +481,9 @@ class ClimateDownloaderApp:
             self.summary.set("筛选条件已变化，请重新查询")
 
     def _refresh_catalog(self) -> None:
+        self._apply_connection()
         dataset = DATASETS[self.dataset.get()]
-        if dataset in {"nex", "power"}:
+        if dataset in {"nex", "power", *noaa.VARIABLES}:
             self._dataset_changed()
             self._write_log("已加载数据源官方变量与筛选列表。")
         elif dataset == "cmip6":
@@ -465,6 +502,8 @@ class ClimateDownloaderApp:
                 items, failed = fetch_batch(request.selection, fetcher, request.workers)
             elif request.dataset == "cordex":
                 items, failed = cordex.fetch_batch(request.selection, request.workers)
+            elif request.dataset in noaa.VARIABLES:
+                items, failed = fetch_batch(request.selection, noaa.fetch_files, request.workers)
             else:
                 items, failed = plan_files(request.selection), {}
             return request, items, failed
@@ -493,9 +532,11 @@ class ClimateDownloaderApp:
         self.downloaded = {}
         self.total_bytes = 0 if unknown else known_total
         self.progress["value"] = 0
+        self._begin_transfer()
+        items, query_failures = list(self.items), dict(self.query_failures)
         self._start_worker(
             "download",
-            lambda: self._download_job(request, list(self.items), dict(self.query_failures)),
+            lambda: self._download_job(request, items, query_failures),
             "正在下载并整理…",
         )
 
@@ -505,40 +546,59 @@ class ClimateDownloaderApp:
         items: list[PlannedItem],
         query_failures: dict[object, Exception],
     ):
-        package, prepared = prepare_package(request.output, items)
-        completed, failed = download_many(
-            [planned.item for planned in prepared],
-            package,
-            workers=request.workers,
-            progress=self._download_progress,
-        )
-        processed: list[Path] = []
-        process_failed: dict[str, Exception] = {}
-        if request.needs_processing:
-            for index, source in enumerate(completed, 1):
-                self.events.put(("log", f"处理 {index}/{len(completed)}：{source.name}"))
-                relative = source.relative_to(package)
-                target = package / "processed" / Path(*relative.parts[1:]).parent / f"{source.stem}_processed.nc"
-                try:
-                    processed.append(process_netcdf(source, target, request.process))
-                    if not request.keep_raw:
-                        source.unlink()
-                except Exception as error:
-                    process_failed[source.name] = error
-        finalize_package(
-            package,
-            prepared,
-            completed,
-            {**failed, **process_failed},
-            filters=request.selection,
-            processing=request.process,
-            processed=processed,
-            query_failures=query_failures,
-        )
-        return package, completed, failed, processed, process_failed
+        package = create_task(request.output, items, request.selection, request.process,
+                              request.keep_raw, query_failures)
+        self.active_package = package
+        self.events.put(('log', f'任务已保存，可从此目录恢复：{package}'))
+        return self._run_saved(package, request.workers)
+
+    def _run_saved(self, package, workers):
+        return run_task(package, workers, self._download_progress, self.stop_event,
+                        lambda message: self.events.put(('log', message)))
+
+    def _begin_transfer(self):
+        self.stop_event.clear()
+        self.progress_buffer.take()
+        self.downloading = True
+        self.last_activity = self.speed_time = time.monotonic()
+        self.speed_bytes = 0
+        self.pause_button.configure(state='normal')
+
+    def _resume_task(self):
+        self._apply_connection()
+        selected = filedialog.askdirectory(title='选择含 task.json 的数据包', initialdir=self.output.get())
+        if not selected:
+            return
+        try:
+            task = load_task(Path(selected))
+            workers = int(self.workers.get())
+        except (ValueError, OSError, KeyError, TypeError) as error:
+            messagebox.showerror('无法恢复', str(error), parent=self.root)
+            return
+        if not messagebox.askyesno('恢复任务', f'恢复 {len(task["planned"])} 个文件，跳过已有文件，继续使用保存的处理参数。\n{selected}', parent=self.root):
+            return
+        self.active_package = Path(selected)
+        self.total_bytes = sum(p.item.size for p in task['planned']) if all(p.item.size for p in task['planned']) else 0
+        self.downloaded = {}
+        self._begin_transfer()
+        self._start_worker('download', lambda: self._run_saved(Path(selected), workers), '正在恢复原数据包…')
+
+    def _pause_task(self):
+        self.stop_event.set()
+        self.pause_button.configure(state='disabled')
+        self.status.set('正在暂停，等待当前网络读取/处理结束；已下载文件会保留')
+
+    def _apply_connection(self):
+        os.environ['CLIMATE_DIRECT'] = '1' if self.connection.get() == '直连' else '0'
+
+    def _close(self):
+        if self.busy and not messagebox.askyesno('关闭程序', '任务仍在运行。关闭将中断任务；下载任务可通过“恢复任务”继续。是否关闭？', parent=self.root):
+            return
+        self.stop_event.set()
+        self.root.destroy()
 
     def _download_progress(self, filename: str, downloaded: int, total: int) -> None:
-        self.events.put(("progress", filename, downloaded, total))
+        self.progress_buffer.put(filename, downloaded, total)
 
     def _start_worker(self, event_name: str, function, status: str) -> None:
         self._set_busy(True, status)
@@ -554,6 +614,8 @@ class ClimateDownloaderApp:
         threading.Thread(target=run, daemon=True).start()
 
     def _poll_events(self) -> None:
+        for filename, (downloaded, total) in self.progress_buffer.take().items():
+            self._progress_ready(filename, downloaded, total)
         try:
             while True:
                 event = self.events.get_nowait()
@@ -568,12 +630,15 @@ class ClimateDownloaderApp:
                     self._progress_ready(*event[1:])
                 elif kind == "log":
                     self._write_log(event[1])
+                    self.status.set(event[1])
                 elif kind == "error":
                     self._show_worker_error(event[1], event[2])
                 elif kind == "busy":
                     self._set_busy(event[1], "就绪")
         except queue.Empty:
             pass
+        if self.downloading and not self.stop_event.is_set() and time.monotonic() - self.last_activity > 30:
+            self.status.set('暂未收到新数据；请查看日志中的连接/重试/处理状态，可暂停后恢复')
         self.root.after(100, self._poll_events)
 
     def _catalog_ready(self, dataset: str, facets: dict[str, list[str]]) -> None:
@@ -636,23 +701,38 @@ class ClimateDownloaderApp:
             messagebox.showinfo("没有匹配项", "当前组合没有找到可下载文件，请调整筛选条件或年份。", parent=self.root)
 
     def _progress_ready(self, filename: str, downloaded: int, total: int) -> None:
+        now = time.monotonic()
+        previous = self.downloaded.get(filename, downloaded)
+        delta = max(0, downloaded - previous)
+        self.speed_bytes += delta
+        if delta:
+            self.last_activity = now
         self.downloaded[filename] = downloaded
         if self.total_bytes:
             self.progress["value"] = min(100, sum(self.downloaded.values()) * 100 / self.total_bytes)
         elif total:
             self.progress["value"] = min(99, downloaded * 100 / total)
-        self.status.set(f"{filename[:18]} {format_size(downloaded)}/{format_size(total)}")
+        elapsed = max(0.1, now - self.speed_time)
+        speed = self.speed_bytes / elapsed
+        self.status.set(f'累计 {format_size(sum(self.downloaded.values()))} / {format_size(self.total_bytes)} · {speed / 1048576:.2f} MiB/s · {filename}')
+        if elapsed > 3:
+            self.speed_time, self.speed_bytes = now, 0
 
     def _download_ready(self, package, completed, failed, processed, process_failed) -> None:
+        self.downloading = False
+        if self.stop_event.is_set():
+            self._write_log(f'任务已暂停，已完成 {len(completed)} 个文件。恢复目录：{package}')
+            return
+        query_failed = load_task(package)['data'].get('query_failures', {})
         self.progress["value"] = 100 if not failed else self.progress["value"]
         self._write_log(
-            f"数据包完成：成功 {len(completed)}，失败 {len(failed)}；处理输出 {len(processed)}，处理失败 {len(process_failed)}。"
+            f"数据包结束：成功 {len(completed)}，失败 {len(failed)}；处理输出 {len(processed)}，处理失败 {len(process_failed)}；查询失败 {len(query_failed)}。"
         )
         self._write_log(f"数据包：{package}")
         for filename, error in {**failed, **process_failed}.items():
             self._write_log(f"失败 · {filename} · {error}")
-        if failed or process_failed:
-            messagebox.showwarning("任务部分完成", f"部分文件失败；已保留成功文件和报告：\n{package}", parent=self.root)
+        if failed or process_failed or query_failed:
+            messagebox.showwarning("任务部分完成", f"部分文件或查询失败；已保留成功文件和报告：\n{package}", parent=self.root)
         else:
             messagebox.showinfo("任务完成", f"数据包、清单和 SHA256 已生成：\n{package}", parent=self.root)
 
@@ -662,16 +742,24 @@ class ClimateDownloaderApp:
         messagebox.showerror("操作失败", str(error), parent=self.root)
 
     def _set_busy(self, busy: bool, status: str) -> None:
+        self.busy = busy
+        if not busy:
+            self.downloading = False
+            self.pause_button.configure(state='disabled')
+        self.resume_button.configure(state='disabled' if busy else 'normal')
         state = "disabled" if busy else "normal"
         reserved = DATASETS[self.dataset.get()] == "era5"
         for button in (self.refresh_button, self.preview_button, self.download_button):
             button.configure(state="disabled" if reserved else state)
         self.dataset_box.configure(state="disabled" if busy else "readonly")
+        self.connection_box.configure(state='disabled' if busy else 'readonly')
         self.status.set(status)
 
     def _write_log(self, message: str) -> None:
         self.log.configure(state="normal")
         self.log.insert("end", f"[{datetime.now():%H:%M:%S}] {message}\n")
+        if int(self.log.index('end-1c').split('.')[0]) > 1000:
+            self.log.delete('1.0', '101.0')
         self.log.see("end")
         self.log.configure(state="disabled")
 

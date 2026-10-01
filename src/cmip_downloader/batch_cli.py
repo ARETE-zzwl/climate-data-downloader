@@ -5,12 +5,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from . import cordex, esgf, nex
+from . import cordex, esgf, nex, noaa
 from .batch import BatchSelection, PlannedItem, fetch_batch
-from .download import download_many
-from .package import finalize_package, prepare_package
+from .tasks import create_task, run_task
 from .power import PowerSelection, plan_files
-from .process import ProcessOptions, process_netcdf
+from .process import ProcessOptions
 
 
 @dataclass(frozen=True)
@@ -133,6 +132,9 @@ def load_batch_job(
             end_year=end_year,
         )
         selection.expand_queries()
+    elif dataset in noaa.VARIABLES:
+        selection = noaa.NoaaSelection(dataset, _tuple(data, "variables", "variable"), start_year, end_year)
+        selection.expand_queries()
     elif dataset == "power":
         if "bbox" not in data:
             raise ValueError("NASA POWER 批量任务必须提供 bbox")
@@ -149,7 +151,7 @@ def load_batch_job(
         )
         selection.expand_queries()
     else:
-        raise ValueError("dataset 必须是 nex、cmip6、cordex 或 power")
+        raise ValueError("dataset 必须是 nex、cmip6、cordex、power、noaa_cpc 或 noaa_ncep")
     return BatchJob(dataset, selection, process, output, workers, keep_raw)
 
 
@@ -162,6 +164,8 @@ def fetch_planned_items(job: BatchJob) -> tuple[list[PlannedItem], dict[object, 
         return cordex.fetch_batch(job.selection, workers=job.workers)
     if job.dataset == "power":
         return plan_files(job.selection), {}
+    if job.dataset in noaa.VARIABLES:
+        return fetch_batch(job.selection, noaa.fetch_files, workers=job.workers)
     raise ValueError(f"不支持的数据源：{job.dataset}")
 
 
@@ -173,34 +177,10 @@ def run_batch_job(job: BatchJob, dry_run: bool = False) -> BatchRunResult:
             planned_count=len(planned),
             failed_count=len(query_failures),
         )
-    package, prepared = prepare_package(job.output, planned)
-    completed, failed = download_many(
-        [planned_item.item for planned_item in prepared],
-        package,
-        workers=job.workers,
-    )
-    processed: list[Path] = []
-    process_failed: dict[str, Exception] = {}
-    if job.needs_processing:
-        for source in completed:
-            relative = source.relative_to(package)
-            target = package / "processed" / Path(*relative.parts[1:]).parent / f"{source.stem}_processed.nc"
-            try:
-                processed.append(process_netcdf(source, target, job.process))
-                if not job.keep_raw:
-                    source.unlink()
-            except Exception as error:
-                process_failed[source.name] = error
-    finalize_package(
-        package,
-        prepared,
-        completed,
-        {**failed, **process_failed},
-        filters=job.selection,
-        processing=job.process,
-        processed=processed,
-        query_failures=query_failures,
-    )
+    if not planned:
+        return BatchRunResult(1, 0, failed_count=len(query_failures))
+    package = create_task(job.output, planned, job.selection, job.process, job.keep_raw, query_failures)
+    package, completed, failed, processed, process_failed = run_task(package, job.workers)
     failed_count = len(failed) + len(process_failed) + len(query_failures)
     return BatchRunResult(
         exit_code=1 if failed_count else 0,
