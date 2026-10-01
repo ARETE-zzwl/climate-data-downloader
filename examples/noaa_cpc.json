@@ -1,0 +1,8 @@
+{
+  "dataset": "noaa_cpc",
+  "variables": ["precip"],
+  "years": [2020, 2020],
+  "workers": 2,
+  "output": "downloads/noaa_cpc",
+  "keep_raw": true
+}

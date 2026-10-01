@@ -1,0 +1,9 @@
+{
+  "dataset": "noaa_ncep",
+  "variables": ["air"],
+  "years": [2020, 2020],
+  "workers": 2,
+  "output": "downloads/noaa_ncep",
+  "keep_raw": true,
+  "processing": {"bbox": [110, 120, 30, 40], "temporal_scale": "monthly", "aggregation": "mean"}
+}

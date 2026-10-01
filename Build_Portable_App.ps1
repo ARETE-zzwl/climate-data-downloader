@@ -1,6 +1,7 @@
 param(
   [string]$SignTool = "",
-  [string]$CertificateThumbprint = ""
+  [string]$CertificateThumbprint = "",
+  [switch]$SkipDependencyInstall
 )
 
 $ErrorActionPreference = "Stop"
@@ -17,8 +18,12 @@ if (-not (Test-Path $python)) {
   }
 }
 
-& $python -m pip install --upgrade pip
-& $python -m pip install --upgrade ".[build]"
+if (-not $SkipDependencyInstall) {
+  & $python -m pip install --upgrade pip
+  if ($LASTEXITCODE -ne 0) { throw "pip upgrade failed." }
+  & $python -m pip install ".[build]"
+  if ($LASTEXITCODE -ne 0) { throw "Dependency installation failed." }
+}
 
 $versionLine = Select-String -Path (Join-Path $root "pyproject.toml") -Pattern '^version\s*=\s*"([^"]+)"' | Select-Object -First 1
 if (-not $versionLine) {
@@ -49,6 +54,7 @@ function Invoke-PyInstaller {
     --distpath $distPath `
     --workpath $workPath `
     --specpath $workPath `
+    --paths (Join-Path $root "src") `
     --collect-data certifi `
     --hidden-import scipy._lib.messagestream `
     (Join-Path $root "packaging\pyinstaller_entry.py")
