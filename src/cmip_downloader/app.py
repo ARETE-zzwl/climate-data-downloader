@@ -342,7 +342,7 @@ class ClimateDownloaderApp:
             self.variable_field.set_values(noaa.VARIABLES[dataset], [noaa.VARIABLES[dataset][0]])
             self.table_field.set_values(['day'], ['day'])
             self.table_field.configure(state='disabled')
-            hint = ('CPC：0.5° 全球陆地站点分析降水，1979 年起，precip 单位 mm/day。'
+            hint = ('CPC：0.5° 全球陆地逐日降水分析，1979 年起；precip 单位以文件属性为准。'
                     if dataset == 'noaa_cpc' else
                     'NCEP/NCAR：2.5° 逐日再分析，1948 年起。air 为 sigma=0.995 近地面气温（不是 2m 气温）；slp 为海平面气压。')
             self.source_hint.configure(text=hint + ' NOAA PSL 官方 NetCDF，按年下载；区域裁剪在本地执行。')
